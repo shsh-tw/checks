@@ -463,7 +463,9 @@ async function buildMarkdown(epModules, c, ever) {
         status = r.pass ? '✅' : '❌';
         results[check.id] = r.pass;
         if (r.pass) {
-          if (r.rescued && r.note) thirdCol = r.note;
+          // ✅ 預設印 howTo（EP03 規格 9.2）；sticky 救回來的、或 check 自己要求的（showNote）才改印 note，
+          // 例如「網址活著但 Cloudflare 擋機器人」這種學生需要知道的但書。
+          if ((r.rescued || r.showNote) && r.note) thirdCol = r.note;
         } else {
           anyFail = true;
           if (r.note) notes[check.id] = truncateNote(r.note, 60);

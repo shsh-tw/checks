@@ -258,7 +258,11 @@ module.exports = {
         if (!cls.ok) return { pass: false, note: cls.note };
         const res = await fetchPage(cls.url, false);
         if (res.challenge) {
-          return { pass: true, note: '網址活著（Cloudflare 擋機器人，機器看不到內容；老師端會再驗）' };
+          return {
+            pass: true,
+            showNote: true,
+            note: '網址活著（Cloudflare 擋機器人，機器看不到內容；老師端會再驗）',
+          };
         }
         if (!res.ok) return { pass: false, note: res.note };
         return { pass: true, note: `上週那一頁抓得到（HTTP ${res.status}）` };
@@ -347,6 +351,7 @@ module.exports = {
         if (res.challenge) {
           return {
             pass: true,
+            showNote: true,
             note: '網址活著（Cloudflare 擋機器人，標題沒比對；隔壁手機打開＋老師端儀表板為準）',
           };
         }
