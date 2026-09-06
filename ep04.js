@@ -205,6 +205,7 @@ module.exports = {
     {
       id: 'ep04_1',
       name: '關 1 先上線再說 🌐',
+      short: '上線',
       howTo: '把上週那一頁 Drop 上去，網址（https 開頭）貼進 notes.md「### 第一次上線的網址」',
       sticky: true,
       async test(ctx) {
@@ -224,6 +225,7 @@ module.exports = {
     {
       id: 'ep04_2',
       name: '關 2 做一個想要的東西',
+      short: '作品',
       howTo: 'index.html 換成自己的新作品（≥20 行、有自己的 <title>、有 <h1>／按鈕／script），notes.md「### 這次做的東西」寫一句話',
       test(ctx) {
         const problems = [];
@@ -274,6 +276,7 @@ module.exports = {
     {
       id: 'ep04_3',
       name: '關 3 上線給別人看 🌐',
+      short: '分享',
       howTo: '新作品 Drop 上去，網址貼進 notes.md「### 上線網址」，而且上線那一頁要跟 repo 裡的 index.html 是同一份',
       sticky: true,
       async test(ctx) {
@@ -315,6 +318,7 @@ module.exports = {
     {
       id: 'ep04_4',
       name: '關 4 秘密藏不住',
+      short: '秘密',
       howTo: 'notes.md EP04 三個問題都用自己的話寫（每題至少 10 個字），第 3 題要把解鎖拿到的通關密語寫進去',
       test(ctx) {
         const loaded = loadEp04Section(ctx);

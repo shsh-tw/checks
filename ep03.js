@@ -86,6 +86,7 @@ module.exports = {
     {
       id: 'ep03_1',
       name: '關 1 第一個腳印',
+      short: '腳印',
       howTo: 'notes.md 的「自我介紹」換成自己的話',
       test(ctx) {
         const notes = ctx.readFile('notes.md');
@@ -117,6 +118,7 @@ module.exports = {
     {
       id: 'ep03_2',
       name: '關 2 第一個網頁',
+      short: '網頁',
       howTo: '根目錄要有 index.html，而且 <title> 裡有字',
       test(ctx) {
         if (!ctx.exists('index.html')) {
@@ -145,6 +147,7 @@ module.exports = {
     {
       id: 'ep03_3',
       name: '關 3 解釋權',
+      short: '解釋',
       howTo: 'notes.md 三個問題都用自己的話寫（每題至少 10 個字，第 3 題要貼出那一行）',
       test(ctx) {
         const notes = ctx.readFile('notes.md');
@@ -202,6 +205,7 @@ module.exports = {
     {
       id: 'ep03_4',
       name: '關 4 登出儀式',
+      short: '登出',
       howTo: '隔壁互查，這裡不判',
       // 沒有 test：永遠 👀，run.js 看到沒有 test function 就不判、也不計入機器可讀 results。
     },
