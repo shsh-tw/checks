@@ -318,7 +318,7 @@ module.exports = {
     {
       id: 'ep04_4',
       name: '關 4 秘密藏不住',
-      short: '秘密',
+      short: '密語',
       howTo: 'notes.md EP04 三個問題都用自己的話寫（每題至少 10 個字），第 3 題要把解鎖拿到的通關密語寫進去',
       test(ctx) {
         const loaded = loadEp04Section(ctx);
