@@ -95,6 +95,25 @@ function subSection(section, headingPrefix) {
 const URL_RE = /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`<>（）()【】\[\]、，。]+/;
 const TRAILING_JUNK_RE = /[.,;:。，、）)】」』>`*_]+$/;
 
+// 白名單樣式（規格 5.1）：只收 Drop、作品牆、GitHub Pages 作業站，加上任何 pages.dev（老師測試用）。
+// 擋掉「隨便貼一個網址就想過關」，也擋掉貼到自己 repo 首頁那種誤會。
+const URL_WHITELIST = [
+  /^https:\/\/drop-[0-9a-f]{8}-[0-9a-f]{3}\.[a-z]+-[a-z]+\.workers\.dev\/?$/,
+  /^https:\/\/shsh-ai-class\.pages\.dev\/gallery\/[A-Za-z0-9-]+\/?$/,
+  /^https:\/\/shsh-tw\.github\.io\/hw-[A-Za-z0-9-]+\/?$/,
+  /^https:\/\/[^/]+\.pages\.dev\//,
+];
+
+// Cloudflare 的機器人挑戰：runner 的 IP 抓 *.workers.dev 會吃 403 + cf-mitigated: challenge，
+// 但同一個網址人用瀏覽器（或老師的 Mac）抓得到 200。403+challenge 代表「網站活著、只是不給機器看」，
+// 判定上視為活著，內容比對交給老師端儀表板與隔壁同學的手機。
+function isCloudflareChallenge(status, headers, body) {
+  if (status !== 403) return false;
+  const mit = headers && typeof headers.get === 'function' ? headers.get('cf-mitigated') : null;
+  if (mit && String(mit).toLowerCase().includes('challenge')) return true;
+  return typeof body === 'string' && body.includes('Just a moment');
+}
+
 function pickUrl(text) {
   const m = String(text || '').match(URL_RE);
   if (!m) return null;
@@ -123,7 +142,14 @@ function classifyUrl(raw) {
   if (host === 'localhost' || host.endsWith('.localhost') || host.startsWith('127.')) {
     return { ok: false, note: `${host} 只有你自己的電腦看得到——要貼 Drop 給你的公開網址` };
   }
-  return { ok: true, url: u.toString() };
+  const url = u.toString();
+  if (!URL_WHITELIST.some((re) => re.test(url))) {
+    return {
+      ok: false,
+      note: `這不像 Drop 或作品牆的網址：${url.slice(0, 40)}（要貼 Drop 上傳完給你的那一串）`,
+    };
+  }
+  return { ok: true, url };
 }
 
 // 回 { ok:true, status, body } 或 { ok:false, note }
@@ -138,7 +164,8 @@ async function fetchPage(url, wantBody) {
     });
     const status = res.status;
     let body = '';
-    if (wantBody) {
+    if (wantBody || status === 403) {
+      // 403 也要讀 body：Cloudflare 挑戰頁的辨識字串在裡面
       try {
         body = await res.text();
       } catch (e) {
@@ -147,6 +174,9 @@ async function fetchPage(url, wantBody) {
     }
     if (status >= 200 && status < 300) {
       return { ok: true, status, body };
+    }
+    if (isCloudflareChallenge(status, res.headers, body)) {
+      return { ok: false, challenge: true, status };
     }
     if (status >= 400 && status < 500) {
       return { ok: false, note: `網址打不開（HTTP ${status}，通常是網址貼錯或那一頁已經不在了）` };
@@ -192,6 +222,13 @@ function hasPassphrase(text) {
   return false;
 }
 
+// ---------- 給老師端儀表板用的旁路資料（規格 5.2） ----------
+
+// run.js 提供 ctx.emit(key, value)，寫進尾註 JSON 的 data。舊版 run.js 沒有這個函式也不會炸。
+function emit(ctx, key, value) {
+  if (ctx && typeof ctx.emit === 'function') ctx.emit(key, String(value == null ? '' : value));
+}
+
 // ---------- 關卡 ----------
 
 const H_FIRST_URL = '### 第一次上線的網址';
@@ -215,9 +252,14 @@ module.exports = {
         if (!sub) {
           return { pass: false, note: `notes.md 少了『${H_FIRST_URL}』那一行標題（標題不要刪，只換下面那行）` };
         }
-        const cls = classifyUrl(pickUrl(mergeContent(sub.bodyLines)));
+        const picked = pickUrl(mergeContent(sub.bodyLines));
+        const cls = classifyUrl(picked);
+        emit(ctx, 'ep04_1_url', cls.ok ? cls.url : picked || '');
         if (!cls.ok) return { pass: false, note: cls.note };
         const res = await fetchPage(cls.url, false);
+        if (res.challenge) {
+          return { pass: true, note: '網址活著（Cloudflare 擋機器人，機器看不到內容；老師端會再驗）' };
+        }
         if (!res.ok) return { pass: false, note: res.note };
         return { pass: true, note: `上週那一頁抓得到（HTTP ${res.status}）` };
       },
@@ -242,6 +284,7 @@ module.exports = {
             problems.push(`index.html 只有 ${lineCount} 行（這週要 20 行以上）`);
           }
           const titleText = squash(extractTitle(html) || '');
+          emit(ctx, 'index_title', (extractTitle(html) || '').trim());
           if (titleText.length < 1) {
             problems.push('index.html 的 <title> 裡沒有字');
           } else if (titleText === '我的第一個網頁') {
@@ -286,7 +329,9 @@ module.exports = {
         if (!sub) {
           return { pass: false, note: `notes.md 少了『${H_LIVE_URL}』那一行標題（標題不要刪，只換下面那行）` };
         }
-        const cls = classifyUrl(pickUrl(mergeContent(sub.bodyLines)));
+        const picked = pickUrl(mergeContent(sub.bodyLines));
+        const cls = classifyUrl(picked);
+        emit(ctx, 'ep04_3_url', cls.ok ? cls.url : picked || '');
         if (!cls.ok) return { pass: false, note: cls.note };
 
         const localHtml = ctx.readFile('index.html');
@@ -299,6 +344,12 @@ module.exports = {
         }
 
         const res = await fetchPage(cls.url, true);
+        if (res.challenge) {
+          return {
+            pass: true,
+            note: '網址活著（Cloudflare 擋機器人，標題沒比對；隔壁手機打開＋老師端儀表板為準）',
+          };
+        }
         if (!res.ok) return { pass: false, note: res.note };
 
         const remoteTitleRaw = extractTitle(res.body);

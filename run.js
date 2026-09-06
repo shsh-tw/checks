@@ -97,11 +97,23 @@ function getTrackedFiles() {
     .filter((p) => !EXCLUDE_DIR_PREFIXES.some((pre) => p === pre.slice(0, -1) || p.startsWith(pre)));
 }
 
+// 模組可以用 ctx.emit(key, value) 往尾註 JSON 的 data 塞旁路資料（規格 5.2）——
+// 例如學生貼的網址、repo 的 index.html title，讓老師端儀表板不必重跑判定就能自己再驗一次。
+// 不影響任何燈的判定；值一律轉字串並截 300 字，免得撐爆 Issue 內文。
+const emitted = {};
+function emit(key, value) {
+  const k = String(key == null ? '' : key);
+  if (!k) return;
+  const v = String(value == null ? '' : value);
+  emitted[k] = v.length > 300 ? v.slice(0, 300) : v;
+}
+
 const ctx = {
   readFile,
   exists: existsPath,
   commits: getCommits(),
   trackedFiles: getTrackedFiles(),
+  emit,
 };
 
 // ---------- 載入 ep*.js 模組（依檔名排序，從 __dirname） ----------
@@ -496,6 +508,7 @@ async function buildMarkdown(epModules, c, ever) {
     results,
     notes,
     ever,
+    data: emitted,
   };
   lines.push(`<!-- checks:${JSON.stringify(tail)} -->`);
 
