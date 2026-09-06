@@ -412,7 +412,7 @@ async function runOneCheck(check, c, ever, nowIso) {
     return {
       pass: true,
       rescued: true,
-      note: `曾於 ${taipeiShort(ever[check.id])} 通過（現在抓不到／預覽已過期）`,
+      note: `曾於 ${taipeiShort(ever[check.id])} 通過（本次：${truncateNote(r.note || '抓不到', 60)}）`,
     };
   }
   return r;
