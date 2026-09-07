@@ -97,6 +97,183 @@ function getTrackedFiles() {
     .filter((p) => !EXCLUDE_DIR_PREFIXES.some((pre) => p === pre.slice(0, -1) || p.startsWith(pre)));
 }
 
+// ---------- 專題週共用層（契約：00_規劃/06_專題週共用契約_v1.md 第三、四節） ----------
+//
+// EP06–EP12 七週共用同一份 專題日誌.md（每週一段）。這一層只做三件事，各週模組不准自己重寫：
+//   ctx.weekStarted(weekId)            該週段落有沒有被填（appliesTo 用：沒開始的週次整張表不印）
+//   ctx.weekAuthors(weekId)            該週「起點」之後有幾位非老師作者（關 3 的分母）
+//   ctx.weekSection(weekId, subHead)   該週某個 ### 小節的內容（已扣提示行）
+//
+// 「該週提交」的定義（契約第三節，2026-09-07 四情境實測）：
+//   起點＝專題日誌.md 的歷次 commit 裡，**該週段落第一次出現有效內容**的那一筆；
+//   作者＝起點（含）到 HEAD 的**整個 repo** commit 作者，扣掉老師、去重。
+//   精確到週、不依賴日期：EP07 只有一個人動時 EP07 算 1 人，同一次判定裡 EP06 仍然是 2 人
+//   （前面幾週的 commit 灌不亮後面的週次，後面幾週的 commit 也不會回頭改寫前面的答案）。
+//   ⚠ 若日後證明不可靠，不准偷偷退成「整個 repo 曾有兩個作者」（D-022）：停手回報根因。
+//
+// 效能：起點只掃「動過 專題日誌.md 的 commit」（一週約一兩筆），同一個 sha 的檔案內容只取一次，
+//   七週共用同一份快取；範圍作者直接切 ctx.commits，不另外呼叫 git log。
+
+const PROJECT_LOG = '專題日誌.md';
+const ALL_COMMITS = getCommits();
+
+// 老師名單：與 ep05.js 的 TEACHER_EMAILS 同一份規則（ep05.js 是已凍結的判定層，不動它，
+// 這裡是共用層的副本；兩邊都吃 CHECKS_TEACHER_EMAILS 覆蓋，逗號分隔）。
+// 老師種檔會留下 non-root commit，不排掉的話學生一個人 push 就湊到兩個作者。
+const TEACHER_EMAILS = ['4925989+coolsea@users.noreply.github.com'];
+function teacherEmailSet() {
+  const raw = process.env.CHECKS_TEACHER_EMAILS;
+  const list = raw ? String(raw).split(',') : TEACHER_EMAILS;
+  return new Set(list.map((s) => String(s).trim().toLowerCase()).filter((s) => s.length > 0));
+}
+
+// 提示行判定：沿用 ep05.js 那一套（去掉行首清單符號／粗體標籤／「標籤：」之後，
+// 整行被全形括號包住且短於 60 字＝提示語），再加上原型實測用的「含『換成你』」那條。
+// 日誌樣板兩種提示語都要擋：`（換成你們的話）` 與 `- A（帳號）：（換成你的話）`（seed 後會是真帳號）。
+const PLACEHOLDER_MAX_CHARS = 60;
+
+function stripHintPrefix(text) {
+  let s = String(text == null ? '' : text);
+  s = s.replace(/^[\s\-*＊+•]+/, '');          // 空白與清單符號
+  s = s.replace(/^\*\*([^*]*)\*\*\s*/, '$1');  // **粗體標籤**
+  s = s.replace(/^.*[：:]\s*(?=（)/, '');       // 「標籤：」（含 `A（帳號）：` 這種括號在標籤裡的）
+  return s.trim();
+}
+
+function isHintLine(raw) {
+  const line = String(raw == null ? '' : raw).trim();
+  if (line.length === 0) return false;
+  if (line.includes('換成你')) return true;
+  const t = stripHintPrefix(line);
+  if (t.length === 0) return false;
+  if (!t.startsWith('（') || !t.endsWith('）')) return false;
+  return Array.from(t).length < PLACEHOLDER_MAX_CHARS;
+}
+
+// 該週段落（`## EP06 …` 到下一個 `## `）的內容行，不含標題行、空行與提示行。
+function weekBodyLines(text, weekId) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.trim().startsWith('## ' + weekId));
+  if (start < 0) return null;
+  const body = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) break;   // `### ` 不會中斷（第三個字元不是空白）
+    body.push(lines[i]);
+  }
+  return body;
+}
+
+function contentLinesOf(bodyLines) {
+  return (bodyLines || [])
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !l.startsWith('#'))
+    .filter((l) => !isHintLine(l));
+}
+
+// 該週段落有沒有被填（原型的 sectionFilled）
+function weekSectionFilled(text, weekId) {
+  const body = weekBodyLines(text, weekId);
+  if (body === null) return false;
+  return contentLinesOf(body).length > 0;
+}
+
+// ---- 起點掃描用的快取（七週共用；同一個 sha 只取一次檔案內容）
+let logCommitShaCache = null;
+const logBlobCache = new Map();
+const weekAuthorsCache = new Map();
+const weekStartedCache = new Map();
+
+function logCommitShas() {
+  if (logCommitShaCache) return logCommitShaCache;
+  let raw = '';
+  try {
+    raw = sh(`git log --reverse --format=%H -- "${PROJECT_LOG}"`);
+  } catch (e) {
+    raw = '';
+  }
+  logCommitShaCache = raw.split('\n').map((s) => s.trim()).filter(Boolean);
+  return logCommitShaCache;
+}
+
+function logBlobAt(sha) {
+  if (logBlobCache.has(sha)) return logBlobCache.get(sha);
+  let content = null;
+  try {
+    content = sh(`git show "${sha}:${PROJECT_LOG}"`);
+  } catch (e) {
+    content = null;
+  }
+  logBlobCache.set(sha, content);
+  return content;
+}
+
+function weekStarted(weekId) {
+  const key = String(weekId);
+  if (weekStartedCache.has(key)) return weekStartedCache.get(key);
+  const started = weekSectionFilled(readFile(PROJECT_LOG), key);
+  weekStartedCache.set(key, started);
+  return started;
+}
+
+function weekAuthors(weekId) {
+  const key = String(weekId);
+  if (weekAuthorsCache.has(key)) return weekAuthorsCache.get(key);
+
+  let startSha = null;
+  for (const sha of logCommitShas()) {
+    if (weekSectionFilled(logBlobAt(sha), key)) {
+      startSha = sha;
+      break;
+    }
+  }
+
+  let out;
+  if (!startSha) {
+    out = { started: false, startSha: null, authors: [] };
+  } else {
+    // ALL_COMMITS 是 git log（最新在前）；起點的索引往前切一刀＝起點（含）到 HEAD。
+    const idx = ALL_COMMITS.findIndex((c) => c.sha === startSha);
+    const range = idx >= 0 ? ALL_COMMITS.slice(0, idx + 1) : [];
+    const skip = teacherEmailSet();
+    const authors = [];
+    const seen = new Set();
+    for (const c of range) {
+      const e = String(c.authorEmail || '').trim().toLowerCase();
+      if (e.length === 0 || skip.has(e) || seen.has(e)) continue;
+      seen.add(e);
+      authors.push(e);
+    }
+    out = { started: true, startSha: startSha.slice(0, 7), authors };
+  }
+  weekAuthorsCache.set(key, out);
+  return out;
+}
+
+// 該週段落底下某個 `### 小節` 的內容（已扣提示行）。
+// 回傳字串（內容行以 \n 相接，模組要逐行就 split、要整段就把 \n 去掉）；小節不存在回 null。
+function weekSection(weekId, subHeading) {
+  const body = weekBodyLines(readFile(PROJECT_LOG), String(weekId));
+  if (body === null) return null;
+  const want = String(subHeading == null ? '' : subHeading).trim();
+  let start = -1;
+  for (let i = 0; i < body.length; i++) {
+    const t = body[i].trim();
+    if (t.startsWith('###') && t.replace(/^#+\s*/, '').startsWith(want)) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  const sub = [];
+  for (let i = start + 1; i < body.length; i++) {
+    if (body[i].trim().startsWith('###')) break;
+    sub.push(body[i]);
+  }
+  return contentLinesOf(sub).join('\n');
+}
+
 // 模組可以用 ctx.emit(key, value) 往尾註 JSON 的 data 塞旁路資料（規格 5.2）——
 // 例如學生貼的網址、repo 的 index.html title，讓老師端儀表板不必重跑判定就能自己再驗一次。
 // 不影響任何燈的判定；值一律轉字串並截 300 字，免得撐爆 Issue 內文。
@@ -134,11 +311,15 @@ function recall(key) {
 const ctx = {
   readFile,
   exists: existsPath,
-  commits: getCommits(),
+  commits: ALL_COMMITS,
   trackedFiles: getTrackedFiles(),
   emit,
   remember,
   recall,
+  // 專題週共用層（契約第四節；EP06–EP12 用，其他週次用不到也不會壞）
+  weekStarted,
+  weekAuthors,
+  weekSection,
 };
 
 // ---------- 載入 ep*.js 模組（依檔名排序，從 __dirname） ----------
@@ -508,11 +689,11 @@ async function buildMarkdown(epModules, c, ever) {
 
   let anyFail = false;
 
-  for (const mod of epModules) {
-    if (!moduleApplies(mod, c)) continue;   // 這個 repo 不是這一週的形狀：整張表不印、也不進 results
-    lines.push(`### ${mod.title}`);
-    lines.push('| 關 | 狀態 | 怎麼過／為什麼沒過 |');
-    lines.push('|---|---|---|');
+  // 跑完一個模組的所有 check：燈一律進 results／results_now／notes（老師端儀表板要看得到），
+  // 表格那幾行先組好但不急著印——折疊時只用得到「全過了沒」。
+  async function runModule(mod) {
+    const rows = [];
+    let allPass = true;
     for (const check of mod.checks) {
       const r = await runOneCheck(check, c, ever, nowIso);
       let status;
@@ -529,12 +710,40 @@ async function buildMarkdown(epModules, c, ever) {
           if ((r.rescued || r.showNote) && r.note) thirdCol = r.note;
         } else {
           anyFail = true;
+          allPass = false;
           if (r.note) notes[check.id] = truncateNote(r.note, 60);
           thirdCol = r.note || check.howTo;
         }
       }
-      lines.push(`| ${check.name} | ${status} | ${thirdCol} |`);
+      rows.push(`| ${check.name} | ${status} | ${thirdCol} |`);
     }
+    return { rows, allPass };
+  }
+
+  // Issue 折疊（契約第四節）：專題週一路加到 EP12，全開會有十張表，學生要捲很久才看到這一堂。
+  // 超過三張時，最舊的那幾張收成一行 `前面幾週：EP06 ✅ EP07 ❌`，只完整印最近三張。
+  // 三張以內維持原樣（EP03／EP04／EP05 的排版與 fixture 都不受影響）。
+  const applicable = epModules.filter((mod) => moduleApplies(mod, c));  // 不適用的整張表不印、也不進 results
+  const ordered = applicable.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const FOLD_KEEP = 3;
+  const foldCount = Math.max(0, ordered.length - FOLD_KEEP);
+
+  const foldedParts = [];
+  for (const mod of ordered.slice(0, foldCount)) {
+    const { allPass } = await runModule(mod);
+    foldedParts.push(`${String(mod.id || '').toUpperCase()} ${allPass ? '✅' : '❌'}`);
+  }
+  if (foldedParts.length > 0) {
+    lines.push(`前面幾週：${foldedParts.join(' ')}`);
+    lines.push('');
+  }
+
+  for (const mod of ordered.slice(foldCount)) {
+    const { rows } = await runModule(mod);
+    lines.push(`### ${mod.title}`);
+    lines.push('| 關 | 狀態 | 怎麼過／為什麼沒過 |');
+    lines.push('|---|---|---|');
+    for (const row of rows) lines.push(row);
     lines.push('');
   }
 
