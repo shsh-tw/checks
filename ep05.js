@@ -249,7 +249,7 @@ module.exports = {
       id: 'ep05_1',
       name: '關 1 我們要幫誰',
       short: '幫誰',
-      howTo: 'README「## 我們要幫誰」寫一個你叫得出來的人（≥8 字，不能寫「大家」），「## 解決什麼問題」寫他卡住的那個場景（≥15 字）',
+      howTo: 'README「## 我們要幫誰」寫一個叫得出來的人（例：我媽、吉他社學弟阿凱、三班值日生；不能寫「大家」「全校同學」這種泛稱），「## 解決什麼問題」寫他卡住的那個場景（≥15 字）',
       test(ctx) {
         const doc = loadReadme(ctx);
         if (doc.err) return { pass: false, note: doc.err };
@@ -341,7 +341,7 @@ module.exports = {
       id: 'ep05_3',
       name: '關 3 被 AI 挑過',
       short: '刁難',
-      howTo: 'README「## AI 挑了什麼漏洞、我們怎麼回答」把 AI 問的問題貼上來（≥3 個問號），每題下面寫你們的回答（整段 ≥60 字）',
+      howTo: 'README「## AI 挑了什麼漏洞、我們怎麼回答」把 AI 問的問題貼上來（≥3 個問號），每題下面寫你們自己的回答（每題 ≥8 字、整段 ≥60 字）',
       test(ctx) {
         const doc = loadReadme(ctx);
         if (doc.err) return { pass: false, note: doc.err };
