@@ -77,6 +77,22 @@ scripts/seed_repo.sh shsh-tw/hw-template    # 薄 workflow＋copilot 指針＋no
 - `ep04.js`：關 1 先上線再說 🌐（sticky）／關 2 做一個想要的東西／關 3 上線給別人看 🌐（sticky，比對上線那頁的 `<title>` 與 repo 的 `index.html` 一致）／關 4 秘密藏不住（第 3 題要含通關密語，用 SHA-256 比對，密語本身不寫進程式）。
 - 抓網址：只收 `https://`，拒絕 `localhost`／`127.`／`file:`；10 秒逾時、UA `shsh-checks`；失敗種類（非 https／逾時／4xx／5xx／title 不符）都寫進說明。
 
+### 🌐 判定是三段的（v1.1，2026-09-07 實證）
+
+GitHub runner 的 IP 抓 Drop 的 `*.workers.dev` 會被 Cloudflare 擋成 **HTTP 403 + `cf-mitigated: challenge`**，同一個網址老師的 Mac 抓是 200。所以不能把 403 一律當「沒上線」：
+
+| 抓到 | 關 1 | 關 3 |
+|---|---|---|
+| 2xx | ✅ | 比對 title：相符 ✅／不符 ❌ |
+| 403 且 `cf-mitigated` 含 `challenge`（或 body 有 `Just a moment`） | ✅「網址活著（Cloudflare 擋機器人…）」 | ✅「網址活著（…標題沒比對…）」 |
+| 其他 4xx／5xx／逾時／DNS 失敗 | ❌ | ❌ |
+
+403 這一格的內容驗證改由老師端儀表板的「真抓」欄（老師的 Mac 直接抓）＋隔壁同學的手機負責。
+
+網址還要符合白名單樣式（Drop、作品牆、`shsh-tw.github.io/hw-*`、任何 `*.pages.dev/`），否則 ❌「這不像 Drop 或作品牆的網址」——擋掉隨便貼一個網址想過關。
+
+check 回傳可以帶 `showNote: true`，讓 ✅ 那一格改印 note 而不是 `howTo`（上面那兩句但書就是靠它顯示的）。
+
 ## 之後每週怎麼加關卡
 
 新增 `epNN.js`，格式：
@@ -100,6 +116,7 @@ module.exports = {
 - `ctx.exists(path)`：相對 repo 根目錄判斷檔案是否存在。
 - `ctx.commits`：陣列，最新在前，每筆 `{ sha, authorEmail, committerEmail, subject, isRoot }`。
 - `ctx.trackedFiles`：`git ls-files` 的結果，已排除 `.checks/`、`checks/`、`.git/`、`.github/`。
+- `ctx.emit(key, value)`：把旁路資料寫進尾註 JSON 的 `data`（不影響任何燈）。EP04 用它送出 `ep04_1_url`／`ep04_3_url`／`index_title`，老師端儀表板才能自己再抓一次網址驗內容。值會轉字串並截 300 字。
 
 `test(ctx)` 可以是 async（要 `fetch` 的關卡就用），要回 `{ pass: boolean, note?: string }`；丟例外會被 `run.js` 接住變成 `{ pass:false, note:'檢查器錯誤：…' }`，不會讓整支 workflow 掛掉。
 
