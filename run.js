@@ -102,8 +102,9 @@ function getTrackedFiles() {
 // EP06–EP12 七週共用同一份 專題日誌.md（每週一段）。這一層只做三件事，各週模組不准自己重寫：
 //   ctx.weekStarted(weekId)            該週段落有沒有被填（appliesTo 用：沒開始的週次整張表不印）
 //   ctx.weekAuthors(weekId)            該週「起點」之後有幾位非老師作者（關 3 的分母）
-//                                      → { started, startSha, authors: [], summary: '2(3/1)' }
+//                                      → { started, startSha, authors: [], names: [], summary: '2(3/1)', shallow }
 //   ctx.weekSection(weekId, subHead)   該週某個 ### 小節的內容（已扣提示行）
+// 另外組 Markdown 時會掃一次「有沒有未來週次已經被填」，印一行提示給老師（不進 results，見下）。
 //
 // 「該週提交」的定義（契約第三節，2026-09-07 四情境實測）：
 //   起點＝專題日誌.md 的歷次 commit 裡，**該週段落第一次出現有效內容**的那一筆；
@@ -111,6 +112,12 @@ function getTrackedFiles() {
 //   精確到週、不依賴日期：EP07 只有一個人動時 EP07 算 1 人，同一次判定裡 EP06 仍然是 2 人
 //   （前面幾週的 commit 灌不亮後面的週次，後面幾週的 commit 也不會回頭改寫前面的答案）。
 //   ⚠ 若日後證明不可靠，不准偷偷退成「整個 repo 曾有兩個作者」（D-022）：停手回報根因。
+//
+// **淺歷史自保（P1-12）**：起點是往回翻歷史找出來的，repo 只有部分歷史（shallow clone）時
+//   翻不到起點，演算法會安靜地回「這一堂 0 個人」——對全班印一個錯的答案而且不報錯。
+//   所以先問 `git rev-parse --is-shallow-repository`，是 shallow 就回 `started:false` 並掛
+//   `shallow:true`，由各週模組印「歷史不完整，這一關請看老師端」。寧可不判，不要判錯。
+//   （Actions 那條路不受影響：checks.yml 的 checkout 是 fetch-depth: 0。）
 //
 // 效能：起點只掃「動過 專題日誌.md 的 commit」（一週約一兩筆），同一個 sha 的檔案內容只取一次，
 //   七週共用同一份快取；範圍作者直接切 ctx.commits，不另外呼叫 git log。
@@ -181,6 +188,26 @@ function weekSectionFilled(text, weekId) {
 }
 
 // ---- 起點掃描用的快取（七週共用；同一個 sha 只取一次檔案內容）
+// `4925989+coolsea@users.noreply.github.com` → `coolsea`（老師掃儀表板要認得出是誰）
+function accountOfEmail(email) {
+  const local = String(email == null ? '' : email).split('@')[0];
+  const plus = local.indexOf('+');
+  return plus >= 0 ? local.slice(plus + 1) : local;
+}
+
+let shallowCache = null;
+function isShallowRepo() {
+  if (shallowCache !== null) return shallowCache;
+  let out = '';
+  try {
+    out = sh('git rev-parse --is-shallow-repository');
+  } catch (e) {
+    out = '';
+  }
+  shallowCache = out.trim() === 'true';
+  return shallowCache;
+}
+
 let logCommitShaCache = null;
 const logBlobCache = new Map();
 const weekAuthorsCache = new Map();
@@ -222,6 +249,13 @@ function weekAuthors(weekId) {
   const key = String(weekId);
   if (weekAuthorsCache.has(key)) return weekAuthorsCache.get(key);
 
+  // 歷史不完整就不判（見檔頭「淺歷史自保」）
+  if (isShallowRepo()) {
+    const out = { started: false, startSha: null, authors: [], names: [], summary: '0', shallow: true, teacherCommits: 0 };
+    weekAuthorsCache.set(key, out);
+    return out;
+  }
+
   let startSha = null;
   for (const sha of logCommitShas()) {
     if (weekSectionFilled(logBlobAt(sha), key)) {
@@ -232,7 +266,7 @@ function weekAuthors(weekId) {
 
   let out;
   if (!startSha) {
-    out = { started: false, startSha: null, authors: [], summary: '0' };
+    out = { started: false, startSha: null, authors: [], names: [], summary: '0', shallow: false, teacherCommits: 0 };
   } else {
     // ALL_COMMITS 是 git log（最新在前）；起點的索引往前切一刀＝起點（含）到 HEAD。
     const idx = ALL_COMMITS.findIndex((c) => c.sha === startSha);
@@ -240,18 +274,52 @@ function weekAuthors(weekId) {
     const skip = teacherEmailSet();
     // 倒著跑＝從起點往 HEAD（時間順），Map 保序，所以 authors 與 summary 都是「依首次出現順序」。
     const counts = new Map();
+    // 老師的 commit 被扣掉之後會整個消失（學生坐老師的示範機、或全域 git 身分還留著老師時就會這樣）。
+    // 只說「只有 1 個人」查不出原因，所以把扣掉幾筆也一起回傳，讓各週模組把它寫進 note。
+    let teacherCommits = 0;
     for (let i = range.length - 1; i >= 0; i--) {
       const e = String(range[i].authorEmail || '').trim().toLowerCase();
-      if (e.length === 0 || skip.has(e)) continue;
+      if (e.length === 0) continue;
+      if (skip.has(e)) {
+        teacherCommits += 1;
+        continue;
+      }
       counts.set(e, (counts.get(e) || 0) + 1);
     }
     const authors = [...counts.keys()];
     // summary＝給老師看的 `2(3/1)`：兩個人、一個 3 筆一個 1 筆。
     // 「B 只補了一個句號」這種假分工掃儀表板就看得出來，不加判定條件（契約第二節、第四節 v1.1）。
     const summary = authors.length === 0 ? '0' : `${authors.length}(${[...counts.values()].join('/')})`;
-    out = { started: true, startSha: startSha.slice(0, 7), authors, summary };
+    out = {
+      started: true,
+      startSha: startSha.slice(0, 7),
+      authors,
+      names: authors.map(accountOfEmail),
+      summary,
+      shallow: false,
+      teacherCommits,
+    };
   }
   weekAuthorsCache.set(key, out);
+  return out;
+}
+
+// 日誌裡所有「已經被填」的週次（`## EPnn` 開頭那些段），最舊在前。
+// 用途：學生可以在 EP06 這一堂就把 EP07–EP12 十四段全部編好，往後每週燈 1、燈 2 自動亮
+// （燈 3 擋得住，因為它看的是該週的 commit；燈 1、2 擋不住），而且老師從 Issue 完全看不出來——
+// 那幾週的模組還沒上線，appliesTo 讓整張表不印，連個影子都沒有。這裡把它撈出來給老師看一行。
+let filledWeeksCache = null;
+function filledWeeksInLog() {
+  if (filledWeeksCache) return filledWeeksCache;
+  const text = readFile(PROJECT_LOG);
+  const out = [];
+  if (typeof text === 'string') {
+    for (const line of text.split('\n')) {
+      const m = line.match(/^##\s+(EP\d{2})\b/);
+      if (m && weekSectionFilled(text, m[1])) out.push(m[1]);
+    }
+  }
+  filledWeeksCache = out;
   return out;
 }
 
@@ -766,6 +834,16 @@ async function buildMarkdown(epModules, c, ever) {
     lines.push(`| ${check.name} | ${status} | ${r.note} |`);
   }
   lines.push('');
+
+  // 未來週次已填（只印給人看：不進 results、不進 notes、不影響任何燈）。
+  // 判準＝「日誌裡這一段有內容，但這次沒有印出它的表」——沒有模組、或模組宣告不適用。
+  // 被折疊進「前面幾週」那一行的週次不算（它們有印，只是印成一行），也不會是「未來」。
+  const shownWeeks = new Set(ordered.map((mod) => String(mod.id || '').toUpperCase()));
+  const preFilled = filledWeeksInLog().filter((w) => !shownWeeks.has(w));
+  if (preFilled.length > 0) {
+    lines.push(`⚠ 偵測到未來週次已填：${preFilled.join('、')}（老師請確認是不是提前編好的）`);
+    lines.push('');
+  }
 
   const sha = c.commits && c.commits[0] ? c.commits[0].sha.slice(0, 7) : 'unknown';
   const fullSha = c.commits && c.commits[0] ? c.commits[0].sha : '';

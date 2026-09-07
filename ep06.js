@@ -6,8 +6,8 @@
 // ★ 這一支是 EP06–EP12 七週的樣板。要做下一週時整檔複製，**只改三處**：
 //     ★1 module.exports.id      'ep06' → 'ep07'
 //     ★2 module.exports.title   'EP06 專題時間 01' → 'EP07 專題時間 02'
-//     ★3 WEEK                   'EP06' → 'EP07'（check 的 id 前綴、emit key、dataColumns key
-//                               都是從 WEEK 算出來的，不用手改）
+//     ★3 WEEK                   'EP06' → 'EP07'（check 的 id 前綴、emit key、dataColumns key、
+//                               關 1 要比對的「上一堂」都是從 WEEK 算出來的，不用手改）
 //   其餘一個字都不要動。刻意不做參數化工廠：七個獨立檔案比一個會被七席同時改的工廠安全。
 //
 // 判定對象是 proj-<隊名> repo 根目錄的 專題日誌.md（七週同一份、每週一段），
@@ -15,6 +15,8 @@
 
 const WEEK = 'EP06';   // ★3
 const ID = WEEK.toLowerCase();   // 'ep06'：check id 與 emit／dataColumns 的 key 前綴
+// 上一堂（EP06 沒有上一堂；EP05 是 README 不是日誌，不算）——關 1 拿它比對「抄上一堂」。
+const PREV_WEEK = WEEK === 'EP06' ? null : 'EP' + String(Number(WEEK.slice(2)) - 1).padStart(2, '0');
 
 const LOG_FILE = '專題日誌.md';
 
@@ -41,6 +43,10 @@ function distinctCount(text) {
   return new Set(Array.from(String(text == null ? '' : text))).size;
 }
 const GIBBERISH_NOTE = '像亂打的（同一個字一直重複）';
+// 比對「有沒有抄上一堂」時用：去掉所有空白（含換行），只比字。
+function squeeze(text) {
+  return String(text == null ? '' : text).replace(/\s+/g, '');
+}
 function lengthCheck(text, min) {
   const collapsed = collapseRepeats(text);
   if (collapsed.length < min) return 'short';
@@ -73,6 +79,13 @@ function loadSection(ctx, subHeading) {
   return { lines, text: lines.join('') };
 }
 
+// 老師的 commit 被扣掉時要說出來（不然那幾筆會整個消失）：學生坐老師的示範機、
+// 或全域 git 身分還留著老師時，訊息只說「只有 1 個人」，跟「身分沒設回來」疊在一起會非常難查。
+// 這一句擺在人數後面（不是句尾）：run.js 把機器可讀的 note 截到 60 字，擺句尾會被切掉。
+function teacherNote(authors) {
+  return authors.teacherCommits > 0 ? `（其中 ${authors.teacherCommits} 筆是老師帳號，不算）` : '';
+}
+
 // run.js 提供 ctx.emit(key, value)，寫進尾註 JSON 的 data（老師端儀表板用；不影響任何燈）。
 function emit(ctx, key, value) {
   if (ctx && typeof ctx.emit === 'function') ctx.emit(key, String(value == null ? '' : value));
@@ -84,10 +97,16 @@ function weekAuthors(ctx) {
   const wa =
     typeof ctx.weekAuthors === 'function'
       ? ctx.weekAuthors(WEEK)
-      : { started: false, startSha: null, authors: [], summary: '0' };
+      : { started: false, startSha: null, authors: [], names: [], summary: '0', shallow: false, teacherCommits: 0 };
+  const names = Array.isArray(wa && wa.names) ? wa.names : [];
+  const summary = (wa && wa.summary) || '0';
   return {
     size: Array.isArray(wa && wa.authors) ? wa.authors.length : 0,
-    summary: (wa && wa.summary) || '0',
+    shallow: Boolean(wa && wa.shallow),
+    teacherCommits: Number(wa && wa.teacherCommits) || 0,
+    // 儀表板的「作者」欄：`2(5/3) mrcoolsea,yuting`——人數與各自筆數之後接帳號，
+    // 老師掃到不認識的帳號才看得出「這一組多了一個人／少了一個人」（P1-11）。
+    summary: names.length > 0 ? `${summary} ${names.join(',')}` : summary,
   };
 }
 
@@ -105,7 +124,7 @@ module.exports = {
   // （實測 EP06 的表印在畫面上、data.did 卻是 EP07 的文字）。
   dataColumns: [
     { key: `${ID}_did`, label: '這堂做了什麼', width: 20 },
-    { key: `${ID}_authors`, label: '作者', width: 12 },   // 值長得像 2(1/1)，寬度要放得下
+    { key: `${ID}_authors`, label: '作者', width: 20 },   // 值長得像 2(1/1) mrcoolsea,yuting，寬度要放得下
   ],
   checks: [
     {
@@ -128,6 +147,17 @@ module.exports = {
             note: `「${H_DID}」還沒寫到 ${DID_MIN} 個字：寫看得到的那一個（多了哪個畫面、哪個按鈕會動了）`,
           };
         }
+
+        // 抄上一堂（D4）：七週共用同一份日誌，把上一段整段複製貼下來，
+        // 字數與亂打過濾都擋不住——那是「這學期最貴的洞」，因為七週會重複七次。
+        // 上一堂讀不到（EP06 沒有上一堂、或那一段還沒填）就跳過，不影響其他判定。
+        if (PREV_WEEK && typeof ctx.weekSection === 'function') {
+          const prev = ctx.weekSection(PREV_WEEK, H_DID);
+          if (prev !== null && squeeze(prev).length > 0 && squeeze(prev) === squeeze(sec.text)) {
+            return { pass: false, note: '這一段跟上一堂一模一樣，寫這一堂真的做了什麼' };
+          }
+        }
+
         return { pass: true, note: '這堂多出來的東西寫下來了' };
       },
     },
@@ -179,14 +209,17 @@ module.exports = {
           );
         }
 
-        if (authors.size < AUTHOR_MIN) {
+        if (authors.shallow) {
+          // 歷史不完整（淺 clone）：判不了「這一堂誰動手」，不要給一個錯的答案。
+          problems.push('歷史不完整，這一關請看老師端');
+        } else if (authors.size < AUTHOR_MIN) {
           problems.push(
-            `這一堂只有 ${authors.size} 個人 commit：另一個人要用自己的帳號 commit push，一個人代打燈不會亮`
+            `這一堂只有 ${authors.size} 個人 commit${teacherNote(authors)}：另一個人要用自己的帳號 commit push，一個人代打燈不會亮`
           );
         }
 
         if (problems.length > 0) return { pass: false, note: problems.join('；') };
-        return { pass: true, note: `下一堂兩人各一句，這一堂有 ${authors.summary} 個人 commit` };
+        return { pass: true, note: `下一堂兩人各一句，這一堂有 ${authors.summary} 個人 commit${teacherNote(authors)}` };
       },
     },
   ],
