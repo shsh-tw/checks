@@ -252,10 +252,43 @@ function logBlobAt(sha) {
   return content;
 }
 
+// 日誌裡的週次標題順序（`## EP06 …` 到 `## EP12 …`）。不寫死清單：種檔改了這裡自動跟著改。
+function logWeekOrder() {
+  const text = readFile(PROJECT_LOG);
+  if (typeof text !== 'string') return [];
+  const out = [];
+  for (const m of text.matchAll(/^##\s+(EP\d{2})\b/gm)) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
 function weekStarted(weekId) {
   const key = String(weekId);
   if (weekStartedCache.has(key)) return weekStartedCache.get(key);
-  const started = weekSectionFilled(readFile(PROJECT_LOG), key);
+  let started = weekSectionFilled(readFile(PROJECT_LOG), key);
+  // 【2026-09-07 使用者裁決：同一筆 commit 不得同時作為兩個以上週次的首次有效起點】
+  //
+  // 沒有這一條的話：一組在 EP06 那天用一筆 commit 把七段全部寫完、搭檔補一筆，
+  // 七週就共用同一個證據起點，之後六堂什麼都不做，二十一盞燈全綠且零警告（實測）。
+  //
+  // 判準完全不看日期，只看「這一週的起點是不是自己的一筆 commit」。
+  // 真的每堂寫一段，必然產生各自不同的起點；一次填多週則只有日誌裡最前面那一週算數，
+  // 其餘幾週的表不印，落進下面「⚠ 偵測到未來週次已填」那一行讓老師看見。
+  //
+  // 取捨（使用者已接受）：請假的組下一堂補寫兩週，若寫在**同一筆** commit 裡，補的那一週不算；
+  // 分兩次 commit 就完全正常。失敗方向是看得見的紅燈，不是靜默假綠燈，日誌內容一個字都不動。
+  if (started) {
+    const order = logWeekOrder();
+    const i = order.indexOf(key);
+    if (i > 0) {
+      const me = weekAuthors(key);
+      if (me.started && me.startSha) {
+        for (let j = 0; j < i; j++) {
+          const prev = weekAuthors(order[j]);
+          if (prev.started && prev.startSha === me.startSha) { started = false; break; }
+        }
+      }
+    }
+  }
   weekStartedCache.set(key, started);
   return started;
 }
