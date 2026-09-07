@@ -129,16 +129,30 @@ const ALL_COMMITS = getCommits();
 // 這裡是共用層的副本；兩邊都吃 CHECKS_TEACHER_EMAILS 覆蓋，逗號分隔）。
 // 老師種檔會留下 non-root commit，不排掉的話學生一個人 push 就湊到兩個作者。
 const TEACHER_EMAILS = ['4925989+coolsea@users.noreply.github.com'];
+// 教材站頂部三格沒填就複製指令時，會被原樣設進 git 身分的那些字面字串。
+const PLACEHOLDER_EMAIL_RE = /你的|隊名|帳號@|＿|example\.com/;
+// 合併衝突記號：學生把 VS Code 的衝突標記整包 commit 掉是這門課的常見事故，
+// 而三關只數字數，衝突標記照樣過關（冷讀實測三盞全綠、日誌在 GitHub 上是壞的）。
+const CONFLICT_MARKERS = ['<<<<<<<', '=======', '>>>>>>>'];
+function hasConflictMarkers(text) {
+  if (typeof text !== 'string') return false;
+  return text.split('\n').some((l) => CONFLICT_MARKERS.some((m) => l.startsWith(m)));
+}
 function teacherEmailSet() {
   const raw = process.env.CHECKS_TEACHER_EMAILS;
   const list = raw ? String(raw).split(',') : TEACHER_EMAILS;
   return new Set(list.map((s) => String(s).trim().toLowerCase()).filter((s) => s.length > 0));
 }
 
-// 提示行判定：沿用 ep05.js 那一套（去掉行首清單符號／粗體標籤／「標籤：」之後，
-// 整行被全形括號包住且短於 60 字＝提示語），再加上原型實測用的「含『換成你』」那條。
-// 日誌樣板兩種提示語都要擋：`（換成你們的話）` 與 `- A（帳號）：（換成你的話）`（seed 後會是真帳號）。
-const PLACEHOLDER_MAX_CHARS = 60;
+// 提示行判定（只服務專題日誌 EP06–EP12；EP05 判 README，自帶另一套，不走這裡）。
+//
+// 【2026-09-07 收緊，原因是一個靜默假綠燈】原本的規則是「整行被全形括號包住且短於 60 字＝提示語」。
+// 學生看到樣板長成 `（換成你們的話）`，**在那對括號裡面**打自己的答案是完全合理的行為
+// （冷讀實測：三段都認真寫、兩人都 push，結果整張表不印、results 連鍵都沒有，
+//  頁尾還印「🎉 這週的燈都亮了」——不是紅燈，是靜默消失，老師端看到的是「這組沒開始」）。
+// 現在只認樣板原本那兩句：`（換成你們的話）` 與 `- A（帳號）：（換成你的話）`（seed 後帳號會是真的）。
+// 兩句都含「換成你」，所以判準就是這三個字，不再看括號形狀。
+const PLACEHOLDER_MAX_CHARS = 60;   // 保留常數：其他地方引用得到，行為已不依賴它
 
 function stripHintPrefix(text) {
   let s = String(text == null ? '' : text);
@@ -151,14 +165,14 @@ function stripHintPrefix(text) {
 function isHintLine(raw) {
   const line = String(raw == null ? '' : raw).trim();
   if (line.length === 0) return false;
-  if (line.includes('換成你')) return true;
-  const t = stripHintPrefix(line);
-  if (t.length === 0) return false;
-  if (!t.startsWith('（') || !t.endsWith('）')) return false;
-  return Array.from(t).length < PLACEHOLDER_MAX_CHARS;
+  return line.includes('換成你');
 }
 
-// 該週段落（`## EP06 …` 到下一個 `## `）的內容行，不含標題行、空行與提示行。
+// 該週段落（`## EP06 …` 到下一個**週次標題**）的內容行，不含標題行、空行與提示行。
+//
+// 【2026-09-07 收緊】原本是「看到任何 `## ` 就斷」。學生把 AI 回覆整段貼進日誌時，
+// 裡面常常帶一行 `## 本週進度總結`——段落當場被切掉，整張表消失（同樣是靜默假綠燈）。
+// 現在只在 `## EPnn` 這種週次標題斷開；其他 `## ` 一律當成內容。
 function weekBodyLines(text, weekId) {
   if (typeof text !== 'string' || text.length === 0) return null;
   const lines = text.split('\n');
@@ -166,7 +180,7 @@ function weekBodyLines(text, weekId) {
   if (start < 0) return null;
   const body = [];
   for (let i = start + 1; i < lines.length; i++) {
-    if (/^##\s/.test(lines[i])) break;   // `### ` 不會中斷（第三個字元不是空白）
+    if (/^##\s+EP\d{2}\b/.test(lines[i])) break;   // 只有週次標題會中斷；`### ` 與其他 `## ` 都是內容
     body.push(lines[i]);
   }
   return body;
@@ -177,6 +191,7 @@ function contentLinesOf(bodyLines) {
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .filter((l) => !l.startsWith('#'))
+    .filter((l) => !CONFLICT_MARKERS.some((m) => l.startsWith(m)))
     .filter((l) => !isHintLine(l));
 }
 
@@ -277,6 +292,7 @@ function weekAuthors(weekId) {
     // 老師的 commit 被扣掉之後會整個消失（學生坐老師的示範機、或全域 git 身分還留著老師時就會這樣）。
     // 只說「只有 1 個人」查不出原因，所以把扣掉幾筆也一起回傳，讓各週模組把它寫進 note。
     let teacherCommits = 0;
+    let placeholderCommits = 0;
     for (let i = range.length - 1; i >= 0; i--) {
       const e = String(range[i].authorEmail || '').trim().toLowerCase();
       if (e.length === 0) continue;
@@ -284,6 +300,9 @@ function weekAuthors(weekId) {
         teacherCommits += 1;
         continue;
       }
+      // 教材站三格沒填就照抄，會把字面佔位字串設成 user.email（冷讀實測：`你的專用信箱`
+      // 被當成一個獨立作者，於是身分根本沒設對的人反而拿到綠燈）。這種不算人。
+      if (PLACEHOLDER_EMAIL_RE.test(e)) { placeholderCommits += 1; continue; }
       counts.set(e, (counts.get(e) || 0) + 1);
     }
     const authors = [...counts.keys()];
@@ -291,6 +310,7 @@ function weekAuthors(weekId) {
     // 「B 只補了一個句號」這種假分工掃儀表板就看得出來，不加判定條件（契約第二節、第四節 v1.1）。
     const summary = authors.length === 0 ? '0' : `${authors.length}(${[...counts.values()].join('/')})`;
     out = {
+      placeholderCommits,
       started: true,
       startSha: startSha.slice(0, 7),
       authors,
@@ -838,6 +858,14 @@ async function buildMarkdown(epModules, c, ever) {
   // 未來週次已填（只印給人看：不進 results、不進 notes、不影響任何燈）。
   // 判準＝「日誌裡這一段有內容，但這次沒有印出它的表」——沒有模組、或模組宣告不適用。
   // 被折疊進「前面幾週」那一行的週次不算（它們有印，只是印成一行），也不會是「未來」。
+  // 合併衝突記號還留在日誌裡：學生按了 VS Code 的解衝突之後沒有把 `<<<<<<<` 那幾行刪掉就 commit。
+  // 這在 GitHub 上是一份壞掉的日誌，而三關只數字數，不講的話沒有人會發現。
+  if (hasConflictMarkers(c.readFile(PROJECT_LOG))) {
+    lines.push('⚠ `專題日誌.md` 裡還留著合併衝突的記號（`<<<<<<<`、`=======`、`>>>>>>>` 那幾行）。');
+    lines.push('　 把那幾行刪掉、只留你們要的內容，再 commit push 一次。那幾行不算字數。');
+    lines.push('');
+  }
+
   const shownWeeks = new Set(ordered.map((mod) => String(mod.id || '').toUpperCase()));
   const preFilled = filledWeeksInLog().filter((w) => !shownWeeks.has(w));
   if (preFilled.length > 0) {
