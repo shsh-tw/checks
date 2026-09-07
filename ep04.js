@@ -92,7 +92,8 @@ const GIBBERISH_NOTE = '像亂打的（同一個字一直重複）';
 function lengthCheck(text, min) {
   const collapsed = collapseRepeats(text);
   if (collapsed.length < min) return 'short';
-  if (distinctCount(collapsed) < 5) return 'gibberish';
+  // 不同字元門檻跟著該題字數走：短答案（自我介紹 ≥4）不能用 5 種字去卡（「我是小明」是合法的）。
+  if (distinctCount(collapsed) < Math.min(5, min)) return 'gibberish';
   return null;
 }
 
