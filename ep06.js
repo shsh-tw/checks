@@ -124,7 +124,7 @@ module.exports = {
   // （實測 EP06 的表印在畫面上、data.did 卻是 EP07 的文字）。
   dataColumns: [
     { key: `${ID}_did`, label: '這堂做了什麼', width: 20 },
-    { key: `${ID}_authors`, label: '作者', width: 20 },   // 值長得像 2(1/1) mrcoolsea,yuting，寬度要放得下
+    { key: `${ID}_authors`, label: '作者', width: 26 },   // 值長得像 2(1/1) mrcoolsea,yuting，寬度要放得下
   ],
   checks: [
     {
