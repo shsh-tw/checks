@@ -100,6 +100,10 @@ function extractSelfIntro(section) {
 module.exports = {
   id: 'ep03',
   title: 'EP03 git 迴圈＋AI 助教',
+  // 這一週判的是個人 repo 的 notes.md；沒有 notes.md 的 repo（例如專題週的 proj-<隊名>）整張表不印。
+  appliesTo(ctx) {
+    return ctx.exists('notes.md');
+  },
   checks: [
     {
       id: 'ep03_1',

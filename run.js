@@ -372,6 +372,22 @@ const WEEKLY = {
   ],
 };
 
+// ---------- 模組適用性（規格 checks_spec_ep05.md 第四節之二） ----------
+
+// 模組可宣告 appliesTo(ctx)：回 false 代表「這個 repo 不是這一週的形狀」，整張表不印、也不進 results。
+// 起因是 EP05：專題週的 proj-<隊名> repo 沒有 notes.md／index.html，EP03 與 EP04 那兩張表在那裡
+// 結構上必然七格全 ❌——學生打開 Issue 先看到一片紅，但那不是他沒做，是表根本不該出現。
+// 沒宣告 appliesTo 的模組一律視為適用（向後相容）；宣告的函式自己炸掉也視為適用（寧可多印一張表，
+// 也不要因為一個例外就讓整週的判定憑空消失）。
+function moduleApplies(mod, c) {
+  if (!mod || typeof mod.appliesTo !== 'function') return true;
+  try {
+    return mod.appliesTo(c) !== false;
+  } catch (e) {
+    return true;
+  }
+}
+
 // ---------- 執行單一 test，捕捉例外（支援 async test） ----------
 
 async function safeTest(check, c) {
@@ -493,6 +509,7 @@ async function buildMarkdown(epModules, c, ever) {
   let anyFail = false;
 
   for (const mod of epModules) {
+    if (!moduleApplies(mod, c)) continue;   // 這個 repo 不是這一週的形狀：整張表不印、也不進 results
     lines.push(`### ${mod.title}`);
     lines.push('| 關 | 狀態 | 怎麼過／為什麼沒過 |');
     lines.push('|---|---|---|');

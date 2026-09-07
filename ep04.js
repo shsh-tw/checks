@@ -301,6 +301,10 @@ module.exports = {
   title: 'EP04 Vibe coding 部署',
   // 老師端儀表板的 data 欄位（規格 checks_spec_ep05.md 第四節，把原本寫死的「作品標題」欄改成模組宣告）。
   dataColumns: [{ key: 'index_title', label: '作品標題', width: 10 }],
+  // 這一週判的是個人 repo 的 notes.md；沒有 notes.md 的 repo（例如專題週的 proj-<隊名>）整張表不印。
+  appliesTo(ctx) {
+    return ctx.exists('notes.md');
+  },
   checks: [
     {
       id: 'ep04_1',

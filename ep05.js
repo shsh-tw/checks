@@ -38,11 +38,28 @@ function findSection(lines, matchFn) {
 
 // 提示行（本模組自帶判定，規格第二節）：
 // EP03／EP04 認的是「含『換成你的』字樣」，那套在這裡不適用——EP05 的 starter 提示語是整行括號包起來的。
-// 規則：一行去頭尾空白後，同時「以（開頭且以）結尾」**且**長度 < 40 才算提示行。
-// 長度上限是 v3 那條「不要把學生用括號寫的正常內容吃掉」的延續：真的寫了東西的人不會剛好整行括號又這麼短。
-const PLACEHOLDER_MAX_CHARS = 40;
+// 規則：一行去頭尾空白，**再去掉行首前綴**之後，同時「以（開頭且以）結尾」**且**長度 < 60 才算提示行。
+//
+// 前綴這一步是 v2 補的洞：starter 有兩種提示語不是「整行都在括號裡」——
+//   `**先不做**：（列 2 到 3 個這學期不碰的東西。）`
+//   `- coolsea：（下週看得出有沒有做的一件事）`   ← seed_proj.sh 會把 A（帳號） 換成真帳號
+// 舊規則判它們「不是提示行」，於是學生一個字沒動也算填了，關 2、關 4 白亮。
+// 去前綴＝去掉行首空白／清單符號／粗體標記，以及「標籤：」（含 `A（帳號）：` 這種括號在標籤裡的）。
+// 長度上限 40 → 60：「我們要幫誰」那句提示語本身就 42 字，40 會漏掉它。
+// 上限存在的理由不變（v3 那條「不要把學生用括號寫的正常內容吃掉」），只是門檻放寬。
+const PLACEHOLDER_MAX_CHARS = 60;
+
+// 去掉行首前綴，只為了判「這行是不是提示語」；真的算內容時整行原樣留著。
+function stripHintPrefix(text) {
+  let s = String(text == null ? '' : text);
+  s = s.replace(/^[\s\-*＊+•]+/, '');          // 空白與清單符號（半形 - * +、全形＊、•）
+  s = s.replace(/^\*\*([^*]*)\*\*\s*/, '$1');  // **粗體標籤**
+  s = s.replace(/^.*[：:]\s*(?=（)/, '');       // 「標籤：」——貪婪吃到最後一個後面就接（的冒號
+  return s.trim();
+}
+
 function isPlaceholderLine(raw) {
-  const t = String(raw == null ? '' : raw).trim();
+  const t = stripHintPrefix(String(raw == null ? '' : raw).trim());
   if (t.length === 0) return false;
   if (!t.startsWith('（') || !t.endsWith('）')) return false;
   return Array.from(t).length < PLACEHOLDER_MAX_CHARS;
@@ -152,6 +169,11 @@ module.exports = {
   title: 'EP05 專題啟動',
   // 老師端儀表板的 data 欄位（規格第四節）：巡班時掃這一欄就知道誰還在寫「大家」。
   dataColumns: [{ key: 'who', label: '要幫誰', width: 20 }],
+  // 這一週判的是 proj-<隊名> 兩人共用 repo 的 README.md。個人 repo（hw-<帳號>）有 notes.md，
+  // 那裡不該出現 EP05 這張表——所以「有 README.md 且沒有 notes.md」才適用。
+  appliesTo(ctx) {
+    return ctx.exists('README.md') && !ctx.exists('notes.md');
+  },
   checks: [
     {
       id: 'ep05_1',
@@ -297,8 +319,9 @@ module.exports = {
 
         const problems = [];
 
-        const bullets = next.bodyLines
-          .map((l) => l.trim())
+        // contentLines 已經把提示行濾掉了——`- coolsea：（下週看得出有沒有做的一件事）`
+        // 原封不動就不算一行（v2 修的洞），兩人真的各寫一句才數得到兩行。
+        const bullets = contentLines(next.bodyLines)
           .filter((l) => /^-\s/.test(l))
           .map((l) => l.replace(/^-\s+/, '').trim())
           .filter((l) => lengthCheck(l, NEXT_LINE_MIN) === null);
