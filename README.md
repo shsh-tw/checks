@@ -98,6 +98,17 @@ GitHub runner 的 IP 抓 Drop 的 `*.workers.dev` 會被 Cloudflare 擋成 **HTT
 
 （v2 收緊：本來還收「任何 `*.pages.dev`」，但那代表貼教材站首頁也能亮燈＝零工作。本機測試要放寬用環境變數 `CHECKS_URL_ALLOW_EXTRA`＝逗號分隔的 regex，Actions 一律不設。）
 
+### 30 秒捷徑都堵掉了（v3 7.1）
+
+老師與學生兩次冷讀都發現「不做事也能亮燈」，補了四道：
+
+- **關 2 的按鈕要真的做事**：`index.html` 要有 `onclick=`／`addEventListener(`／`function `／`=>` 其中之一，而且 `<script>` 裡去空白後 ≥20 字。空的 `<script></script>` 配一顆死按鈕不算。
+- **亂打過濾**（EP03 三問、EP04 一句話與三問都套用）：先把連續重複的同一字元壓成 1 個再算字數（`啊啊啊啊`→`啊`），而且去重後不同字元數要 ≥5。note 寫「像亂打的（同一個字一直重複）」。正常中文不受影響——EP03 那 17 個 fixture 一個都沒掉。
+- **🔒 多抓 Cloudflare claim 權杖**：`claimToken=`、`dash.cloudflare.com/claim-preview`。學生在 Drop 誤按「Copy claim link」貼進 notes 會被擋（那條連結等於把檔案的控制權交出去）。
+- **✍️ 多擋幾句廢話**：`test1`、`測試`（完全相同才算），以及 `改了一些東西`／`修改一些東西`／`改東西`／`一些東西`（包在更長的句子裡也算）。
+
+尾註另外加 `results_now`＝**本次實際判定**（不含 sticky 救援），`results` 照舊含救援給燈用。儀表板靠這兩個的差別印 `✅*`。
+
 ### 關 2 不准拿關 1 那一頁交差（v2 6.3）
 
 關 1 通過的當下，檢查器把 `index.html` 的 sha1（去 CRLF）記進持久記憶；之後每次 push，關 2 都拿現在的 `index.html` 跟它比——一樣就 ❌「index.html 還是關 1 上線的那一頁」。
