@@ -299,6 +299,8 @@ const H_LIVE_URL = '### 上線網址';
 module.exports = {
   id: 'ep04',
   title: 'EP04 Vibe coding 部署',
+  // 老師端儀表板的 data 欄位（規格 checks_spec_ep05.md 第四節，把原本寫死的「作品標題」欄改成模組宣告）。
+  dataColumns: [{ key: 'index_title', label: '作品標題', width: 10 }],
   checks: [
     {
       id: 'ep04_1',
