@@ -121,9 +121,17 @@ function missingNote(names) {
 }
 
 // 空泛詞黑名單（規格第二節）：出現在「我們要幫誰」段即 ❌。
-const VAGUE_WORDS = ['大家', '所有人', '全世界', '每個人', '人們', '使用者們', '同學們', '全校', '社會大眾', '任何人'];
+// v2（學生冷讀 P0-A）：這份清單是這一關的**主力**，字數門檻退成 2 字。
+// 原因是教材自己拿「我媽」（2 字）、「社團學弟」、「值日生」當正確示範，8 字門檻會把示範答案退掉，
+// 而退件訊息又叫學生寫那三個例子——自相矛盾。真正要擋的是「全校同學」這種指不到人的答案。
+// 注意：清單是子字串比對，加詞前先確認不會誤傷「社團學弟」「值日生」「吉他社學弟阿凱」。
+const VAGUE_WORDS = [
+  '大家', '所有人', '全世界', '每個人', '人們', '使用者們', '同學', '全校', '社會大眾', '任何人',
+  '高三', '社員', '學生', '老師們',
+];
+const WHO_EXAMPLES = '寫一個叫得出來的人（例：我媽、吉他社學弟阿凱、三班值日生）';
 
-const WHO_MIN = 8;
+const WHO_MIN = 2;
 const PROBLEM_MIN = 15;
 const WORTH_MIN = 15;
 const MIN_FEATURE_MIN = 15;
@@ -131,6 +139,7 @@ const NOT_DOING_MARK = '先不做';
 const NOT_DOING_MIN = 6;
 const AI_MIN = 60;
 const AI_QUESTION_MIN = 3;
+const AI_ANSWER_MIN = 8;
 const NEXT_LINE_MIN = 8;
 const NEXT_LINE_COUNT = 2;
 const AUTHOR_MIN = 2;
@@ -152,23 +161,84 @@ function sectionOf(lines, heading) {
   return findSection(lines, (l) => l.trim().startsWith(heading));
 }
 
+// 「我們的回答：」這種標籤不算答案本身（只吃冒號前 6 字以內的短標籤，免得把真的內容切掉）。
+function stripAnswerLabel(text) {
+  return String(text == null ? '' : text)
+    .replace(/^[-*＊+•\s]+/, '')
+    .replace(/^.{0,6}[：:]\s*/, '')
+    .trim();
+}
+
+// 把「AI 挑了什麼漏洞」那一段拆成一題一題（學生冷讀 P0-B）。
+// 只數問號的話，三個問題各回一句「有。」也會亮燈——那不是「被 AI 挑過」，是把問號貼上來而已。
+// 拆法：含問號的行＝問句行（一行有幾個問號就算幾個問號，總數仍拿去比 ≥3）；
+// 它的回答＝該行最後一個問號之後的殘字，加上後面到下一個問句行為止的所有行。
+// 整段寫成一大段散文（問句與回答混在同一行）也數得到——那時「回答」就是最後一個問號之後那一段。
+function collectQa(bodyLines) {
+  const items = [];
+  let cur = null;
+  for (const line of contentLines(bodyLines)) {
+    const marks = (line.match(/[？?]/g) || []).length;
+    if (marks > 0) {
+      const lastIdx = Math.max(line.lastIndexOf('？'), line.lastIndexOf('?'));
+      cur = { marks, parts: [] };
+      const tail = line.slice(lastIdx + 1).trim();
+      if (tail.length > 0) cur.parts.push(tail);
+      items.push(cur);
+    } else if (cur) {
+      cur.parts.push(line);
+    }
+    // 第一個問句出現之前的文字不屬於任何一題的回答
+  }
+  return items.map((it) => ({
+    marks: it.marks,
+    // 只在第一段去標籤：後面接續的行照原樣算，免得每行都被切一次
+    answer: (it.parts.length === 0 ? '' : stripAnswerLabel(it.parts[0]) + it.parts.slice(1).join('')).replace(/\s+/g, ''),
+  }));
+}
+
 // run.js 提供 ctx.emit(key, value)，寫進尾註 JSON 的 data（老師端儀表板用；不影響任何燈）。
 function emit(ctx, key, value) {
   if (ctx && typeof ctx.emit === 'function') ctx.emit(key, String(value == null ? '' : value));
 }
 
-function nonRootAuthors(ctx) {
+// 關 4 數「幾個人動過手」時要把老師排掉（P0-1）。
+// seed_proj.sh 對**新** repo 已改成單一 root commit，但「repo 已存在、補缺的檔案」那條冪等路徑
+// 仍會留下老師的 non-root commit；只要有一筆，學生一個人 push 就湊到兩個作者，
+// 「一個人代打燈不會亮」就變成假的。所以判定這一層也要自己防。
+// 換老師或多人共管時用環境變數 CHECKS_TEACHER_EMAILS 覆蓋（逗號分隔）。
+const TEACHER_EMAILS = ['4925989+coolsea@users.noreply.github.com'];
+function teacherEmailSet() {
+  const raw = process.env.CHECKS_TEACHER_EMAILS;
+  const list = raw ? String(raw).split(',') : TEACHER_EMAILS;
+  return new Set(list.map((s) => String(s).trim().toLowerCase()).filter((s) => s.length > 0));
+}
+
+// 回 { size, summary }：size 是幾個人（燈 4 用），summary 是給老師看的 `2(3/1)`＝兩個人、
+// 一個 3 筆一個 1 筆。老師掃儀表板就看得出「B 只補了一個句號」這種假分工，不加判定條件。
+function nonRootAuthorStats(ctx) {
+  const skip = teacherEmailSet();
   const nonRoot = ((ctx && ctx.commits) || []).filter((c) => !c.isRoot);
-  return new Set(
-    nonRoot.map((c) => String(c.authorEmail || '').trim().toLowerCase()).filter((e) => e.length > 0)
-  );
+  const counts = new Map();
+  for (const c of nonRoot) {
+    const e = String(c.authorEmail || '').trim().toLowerCase();
+    if (e.length === 0 || skip.has(e)) continue;
+    counts.set(e, (counts.get(e) || 0) + 1);
+  }
+  const size = counts.size;
+  const each = [...counts.values()].sort((a, b) => b - a);
+  return { size, summary: size === 0 ? '0' : `${size}(${each.join('/')})` };
 }
 
 module.exports = {
   id: 'ep05',
   title: 'EP05 專題啟動',
-  // 老師端儀表板的 data 欄位（規格第四節）：巡班時掃這一欄就知道誰還在寫「大家」。
-  dataColumns: [{ key: 'who', label: '要幫誰', width: 20 }],
+  // 老師端儀表板的 data 欄位（規格第四節）：「要幫誰」掃一眼就知道誰還在寫「大家」，
+  // 「作者」是關 4 真正的分母——老師不用點進 repo 就看得出那一組是不是一個人在代打。
+  dataColumns: [
+    { key: 'who', label: '要幫誰', width: 20 },
+    { key: 'authors', label: '作者', width: 12 },   // 值長得像 2(3/1)，寬度要放得下
+  ],
   // 這一週判的是 proj-<隊名> 兩人共用 repo 的 README.md。個人 repo（hw-<帳號>）有 notes.md，
   // 那裡不該出現 EP05 這張表——所以「有 README.md 且沒有 notes.md」才適用。
   appliesTo(ctx) {
@@ -197,15 +267,11 @@ module.exports = {
 
         const problems = [];
         const whoBad = lengthCheck(whoText, WHO_MIN);
-        if (whoBad === 'gibberish') {
-          problems.push(`「我們要幫誰」${GIBBERISH_NOTE}`);
-        } else if (whoBad) {
-          problems.push(`「我們要幫誰」還沒寫到 ${WHO_MIN} 個字：寫一個你叫得出來的人（社團學弟、我媽、值日生）`);
-        } else {
-          const hit = VAGUE_WORDS.find((w) => whoText.includes(w));
-          if (hit) {
-            problems.push(`「我們要幫誰」要寫一個你叫得出來的人，不能是「${hit}」這種：改成一個叫得出名字的人再 push`);
-          }
+        const vagueHit = VAGUE_WORDS.find((w) => whoText.includes(w));
+        if (whoBad) {
+          problems.push(`「我們要幫誰」還太短或太籠統：${WHO_EXAMPLES}`);
+        } else if (vagueHit) {
+          problems.push(`「我們要幫誰」不能是「${vagueHit}」這種泛稱：${WHO_EXAMPLES}`);
         }
 
         const problemText = mergeContent(problem.bodyLines);
@@ -298,8 +364,17 @@ module.exports = {
           problems.push(`這一段還沒寫到 ${AI_MIN} 個字：每個問題下面要有你們自己的回答`);
         }
 
+        // 逐題檢查回答（P0-B）：問號數夠、總字數夠，但每題只寫「有。」不算回答過。
+        const qa = collectQa(ai.bodyLines);
+        const thin = qa.filter((it) => lengthCheck(it.answer, AI_ANSWER_MIN) !== null);
+        if (thin.length > 0) {
+          problems.push(
+            `AI 的問題要一題一題回答，每個回答至少 ${AI_ANSWER_MIN} 個字（現在有 ${thin.length} 題只寫了幾個字）`
+          );
+        }
+
         if (problems.length > 0) return { pass: false, note: problems.join('；') };
-        return { pass: true, note: 'AI 挑過漏洞了，而且你們自己回答了' };
+        return { pass: true, note: 'AI 挑過漏洞了，而且你們自己一題一題回答了' };
       },
     },
     {
@@ -308,8 +383,8 @@ module.exports = {
       short: '兩人',
       howTo: 'README「## 下一步」兩人各一行（`- ` 開頭、各 ≥8 字），而且兩個人都要用自己的帳號 commit push',
       test(ctx) {
-        const authors = nonRootAuthors(ctx);
-        emit(ctx, 'authors', authors.size);
+        const authors = nonRootAuthorStats(ctx);
+        emit(ctx, 'authors', authors.summary);
 
         const doc = loadReadme(ctx);
         if (doc.err) return { pass: false, note: doc.err };
@@ -336,7 +411,7 @@ module.exports = {
         }
 
         if (problems.length > 0) return { pass: false, note: problems.join('；') };
-        return { pass: true, note: `下一步兩人各一句，repo 裡有 ${authors.size} 個人的 commit` };
+        return { pass: true, note: `下一步兩人各一句，repo 裡有 ${authors.summary} 個人的 commit` };
       },
     },
   ],
