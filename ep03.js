@@ -58,6 +58,23 @@ function badEncoding(text) {
   return typeof text === 'string' && text.includes('\uFFFD');
 }
 
+// 亂打過濾（v3 7.1）：「啊啊啊啊啊啊啊啊啊啊」湊得到 10 個字，但那不是答案。
+// 兩關：① 連續重複的同一字元壓成 1 個之後再算長度 ② 去重後不同字元數要 ≥5。
+function collapseRepeats(text) {
+  return String(text == null ? '' : text).replace(/(.)\1+/gu, '$1');
+}
+function distinctCount(text) {
+  return new Set(Array.from(String(text == null ? '' : text))).size;
+}
+const GIBBERISH_NOTE = '像亂打的（同一個字一直重複）';
+// 內容長度是否達標；不達標時回不合格的原因種類（'short'／'gibberish'）
+function lengthCheck(text, min) {
+  const collapsed = collapseRepeats(text);
+  if (collapsed.length < min) return 'short';
+  if (distinctCount(collapsed) < 5) return 'gibberish';
+  return null;
+}
+
 function findEp03Section(notesText) {
   const lines = notesText.split('\n');
   return findSection(lines, (l) => /^##\s+EP03/.test(l.trim()));
@@ -103,10 +120,16 @@ module.exports = {
         const content = extractSelfIntro(section);
         const hasNonRootCommit = (ctx.commits || []).some((c) => !c.isRoot);
 
-        if (content.length < 4) {
+        const introBad = lengthCheck(content, 4);
+        if (introBad) {
           return {
             pass: false,
-            note: content.length === 0 ? '自我介紹還沒寫' : '自我介紹還沒換成自己的話（少於 4 字）',
+            note:
+              content.length === 0
+                ? '自我介紹還沒寫'
+                : introBad === 'gibberish'
+                ? `自我介紹${GIBBERISH_NOTE}`
+                : '自我介紹還沒換成自己的話（少於 4 字）',
           };
         }
         if (!hasNonRootCommit) {
@@ -182,11 +205,13 @@ module.exports = {
         const c3 = mergeContent(q3.bodyLines);
 
         const problems = [];
-        if (c1.length < 10) problems.push('第 1 題還沒寫到 10 個字');
-        if (c2.length < 10) problems.push('第 2 題還沒寫到 10 個字');
-        if (c3.length < 10) {
-          problems.push('第 3 題還沒寫到 10 個字');
-        } else if (!/index\.html|<|html/i.test(c3)) {
+        const q = [c1, c2, c3];
+        for (let i = 0; i < 3; i++) {
+          const bad = lengthCheck(q[i], 10);
+          if (bad === 'gibberish') problems.push(`第 ${i + 1} 題${GIBBERISH_NOTE}`);
+          else if (bad) problems.push(`第 ${i + 1} 題還沒寫到 10 個字`);
+        }
+        if (!lengthCheck(c3, 10) && !/index\.html|<|html/i.test(c3)) {
           problems.push('第 3 題沒貼出那一行程式碼');
         }
 

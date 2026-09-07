@@ -33,8 +33,9 @@ workflow 做兩次 checkout：學生 repo 到工作目錄、`shsh-tw/checks` 到
 ## 兩支種檔腳本
 
 ```bash
-scripts/seed_checks.sh                      # 檢查器正本 → shsh-tw/checks（無差異不 commit）
-scripts/seed_repo.sh shsh-tw/hw-template    # 薄 workflow＋copilot 指針＋notes.md → 學生 repo／template
+# 從專案根目錄執行
+zsh scripts/seed_checks.sh                      # 檢查器正本 → shsh-tw/checks（無差異不 commit）
+zsh scripts/seed_repo.sh shsh-tw/hw-template    # 薄 workflow＋copilot 指針＋notes.md → 學生 repo／template
 ```
 
 `seed_repo.sh` 對 `notes.md` 是**追加制**：沒有檔案就放完整 starter（EP03 段＋EP04 段），已經有就只補缺的週次段落，絕不覆蓋學生寫過的東西。
@@ -89,7 +90,18 @@ GitHub runner 的 IP 抓 Drop 的 `*.workers.dev` 會被 Cloudflare 擋成 **HTT
 
 403 這一格的內容驗證改由老師端儀表板的「真抓」欄（老師的 Mac 直接抓）＋隔壁同學的手機負責。
 
-網址還要符合白名單樣式（Drop、作品牆、`shsh-tw.github.io/hw-*`、任何 `*.pages.dev/`），否則 ❌「這不像 Drop 或作品牆的網址」——擋掉隨便貼一個網址想過關。
+網址還要符合白名單樣式，否則 ❌「這不像 Drop 或作品牆的網址」——擋掉隨便貼一個網址想過關：
+
+- Drop：`https://drop-xxxxxxxx-xxx.<形容詞>-<名詞>.workers.dev`
+- 作品牆：`https://shsh-ai-class.pages.dev/gallery/<帳號>/`
+- GitHub Pages 作業站：`https://shsh-tw.github.io/hw-<帳號>/`
+
+（v2 收緊：本來還收「任何 `*.pages.dev`」，但那代表貼教材站首頁也能亮燈＝零工作。本機測試要放寬用環境變數 `CHECKS_URL_ALLOW_EXTRA`＝逗號分隔的 regex，Actions 一律不設。）
+
+### 關 2 不准拿關 1 那一頁交差（v2 6.3）
+
+關 1 通過的當下，檢查器把 `index.html` 的 sha1（去 CRLF）記進持久記憶；之後每次 push，關 2 都拿現在的 `index.html` 跟它比——一樣就 ❌「index.html 還是關 1 上線的那一頁」。
+沒做過關 1（沒有記憶）就不加這條。`recall` 讀的是**這次跑之前**就存在的記憶，所以「一次 push 把整週做完」的人不會被自己剛寫的記憶判死。
 
 check 回傳可以帶 `showNote: true`，讓 ✅ 那一格改印 note 而不是 `howTo`（上面那兩句但書就是靠它顯示的）。
 
@@ -117,6 +129,7 @@ module.exports = {
 - `ctx.commits`：陣列，最新在前，每筆 `{ sha, authorEmail, committerEmail, subject, isRoot }`。
 - `ctx.trackedFiles`：`git ls-files` 的結果，已排除 `.checks/`、`checks/`、`.git/`、`.github/`。
 - `ctx.emit(key, value)`：把旁路資料寫進尾註 JSON 的 `data`（不影響任何燈）。EP04 用它送出 `ep04_1_url`／`ep04_3_url`／`index_title`，老師端儀表板才能自己再抓一次網址驗內容。值會轉字串並截 300 字。
+- `ctx.remember(key, value)` / `ctx.recall(key)`：跨 push 的持久記憶，存在尾註 JSON 的 `mem`（跟 `ever` 一樣先讀既有 Issue）。`remember` 只在 key 尚未存在時寫入、值截 200 字；`recall` 讀的是這次跑之前的快照。本機模式用 `CHECKS_MEM_JSON` 注入。
 
 `test(ctx)` 可以是 async（要 `fetch` 的關卡就用），要回 `{ pass: boolean, note?: string }`；丟例外會被 `run.js` 接住變成 `{ pass:false, note:'檢查器錯誤：…' }`，不會讓整支 workflow 掛掉。
 
@@ -125,15 +138,17 @@ module.exports = {
 在**學生 repo 根目錄**（不是這個資料夾）：
 
 ```bash
-node /路徑/共用元件/檢查器/run.js            # 印完整 Markdown（本機模式，不會動 Issue）
-node /路徑/共用元件/檢查器/run.js --json     # 只印一行 JSON（尾註那段），給老師儀表板 --local 用
+# <專案根> 換成這個專案資料夾的絕對路徑
+node <專案根>/共用元件/檢查器/run.js            # 印完整 Markdown（本機模式，不會動 Issue）
+node <專案根>/共用元件/檢查器/run.js --json     # 只印一行 JSON（尾註那段），給老師儀表板 --local 用
 ```
 
 離線回歸測試（不碰網路以外的任何東西，跑完自動清暫存夾）：
 
 ```bash
-scripts/test_checker.sh              # EP03 17 case ＋ EP04 13 case
-scripts/test_checker.sh --week ep03  # 只跑 EP03（純離線）
+# 從專案根目錄執行
+zsh scripts/test_checker.sh              # EP03 17 case ＋ EP04 19 case
+zsh scripts/test_checker.sh --week ep03  # 只跑 EP03（純離線）
 ```
 
 ## 設計上刻意不做的事

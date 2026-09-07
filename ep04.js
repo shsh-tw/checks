@@ -6,6 +6,14 @@
 
 const crypto = require('crypto');
 
+// 關 1 上線的是「上週那一頁」；關 2 要的是新作品。用 index.html 的內容雜湊記住關 1 當下的那一份，
+// 關 2 再比對——一樣就代表根本沒做新東西（v2 6.3）。去掉 CRLF 才不會因為換行風格誤判成不同檔。
+function indexSha(ctx) {
+  const html = ctx.readFile('index.html');
+  if (html === null) return null;
+  return crypto.createHash('sha1').update(html.replace(/\r/g, ''), 'utf8').digest('hex');
+}
+
 // 通關密語只以 SHA-256 進程式（密語本身不寫進任何檔案；正本在 週次/EP04…/闖關/secret_challenge.json）。
 const PASSPHRASE_SHA256 = '07dae7b20ce9fd7564a53686d44f75e8ab0e2680f14581f6564fb177391f4369';
 const PASSPHRASE_MIN = 6;
@@ -49,6 +57,9 @@ function isPlaceholderLine(raw) {
   const t = raw.trim();
   if (t.includes('換成你的')) return true;
   if (t.includes('把這一行換成')) return true;
+  // v2 補洞：第 2 題的 starter 提示行本身就長得像答案（含 weather.example.com…?key=xxxx），
+  // 不擋掉的話「完全沒動 starter」也會過第 2 題。這一行只出現在 starter，學生貼真的那條不會有「長得像」。
+  if (t.includes('貼出來，長得像')) return true;
   return false;
 }
 
@@ -66,6 +77,23 @@ function mergeContent(bodyLines) {
 const BAD_ENC_NOTE = '存成了 Big5／ANSI，GitHub 上看到的是亂碼：用 VS Code 打開它 → 右下角點編碼 → Save with Encoding → UTF-8 → 重新 commit push';
 function badEncoding(text) {
   return typeof text === 'string' && text.includes('�');
+}
+
+// 亂打過濾（v3 7.1）：「啊啊啊啊啊啊啊啊啊啊」湊得到 10 個字，但那不是答案。
+// 兩關：① 連續重複的同一字元壓成 1 個之後再算長度 ② 去重後不同字元數要 ≥5。
+function collapseRepeats(text) {
+  return String(text == null ? '' : text).replace(/(.)\1+/gu, '$1');
+}
+function distinctCount(text) {
+  return new Set(Array.from(String(text == null ? '' : text))).size;
+}
+const GIBBERISH_NOTE = '像亂打的（同一個字一直重複）';
+// 內容長度是否達標；不達標時回不合格的原因種類（'short'／'gibberish'）
+function lengthCheck(text, min) {
+  const collapsed = collapseRepeats(text);
+  if (collapsed.length < min) return 'short';
+  if (distinctCount(collapsed) < 5) return 'gibberish';
+  return null;
 }
 
 function findEp04Section(notesText) {
@@ -101,8 +129,26 @@ const URL_WHITELIST = [
   /^https:\/\/drop-[0-9a-f]{8}-[0-9a-f]{3}\.[a-z]+-[a-z]+\.workers\.dev\/?$/,
   /^https:\/\/shsh-ai-class\.pages\.dev\/gallery\/[A-Za-z0-9-]+\/?$/,
   /^https:\/\/shsh-tw\.github\.io\/hw-[A-Za-z0-9-]+\/?$/,
-  /^https:\/\/[^/]+\.pages\.dev\//,
 ];
+
+// 測試用例外（v2）：本機 fixture 才設，Actions 不設。逗號分隔的 regex 字串。
+// 收緊白名單的原因是「貼教材站首頁也能亮燈」——那是零工作，不是上線。
+function extraAllowPatterns() {
+  const raw = process.env.CHECKS_URL_ALLOW_EXTRA;
+  if (!raw) return [];
+  return String(raw)
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => {
+      try {
+        return new RegExp(x);
+      } catch (e) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
 
 // Cloudflare 的機器人挑戰：runner 的 IP 抓 *.workers.dev 會吃 403 + cf-mitigated: challenge，
 // 但同一個網址人用瀏覽器（或老師的 Mac）抓得到 200。403+challenge 代表「網站活著、只是不給機器看」，
@@ -143,7 +189,7 @@ function classifyUrl(raw) {
     return { ok: false, note: `${host} 只有你自己的電腦看得到——要貼 Drop 給你的公開網址` };
   }
   const url = u.toString();
-  if (!URL_WHITELIST.some((re) => re.test(url))) {
+  if (![...URL_WHITELIST, ...extraAllowPatterns()].some((re) => re.test(url))) {
     return {
       ok: false,
       note: `這不像 Drop 或作品牆的網址：${url.slice(0, 40)}（要貼 Drop 上傳完給你的那一串）`,
@@ -229,7 +275,21 @@ function emit(ctx, key, value) {
   if (ctx && typeof ctx.emit === 'function') ctx.emit(key, String(value == null ? '' : value));
 }
 
+// run.js 提供 ctx.remember/ctx.recall（跨 push 的持久記憶，存在 Issue 尾註的 mem）。
+function rememberIndex(ctx) {
+  if (!ctx || typeof ctx.remember !== 'function') return;
+  const sha = indexSha(ctx);
+  if (sha) ctx.remember('ep04_1_index_sha', sha);
+}
+
 // ---------- 關卡 ----------
+
+// 第 2 題要的東西（v2 6.4）：老師假網站在 Network 分頁露出來的那條請求。
+const NETWORK_URL_MARK = 'weather.example.com/today?key=';
+// 「整支 key 原樣貼上」的樣式：sk-demo- 後面還接著一長串就是沒遮。
+const UNMASKED_KEY_RE = /sk-demo-[A-Za-z0-9_-]{16,}/;
+// 遮罩：x／X／＊／* 連續 3 個以上。
+const MASK_RE = /[xX*＊]{3,}/;
 
 const H_FIRST_URL = '### 第一次上線的網址';
 const H_WHAT = '### 這次做的東西';
@@ -258,6 +318,7 @@ module.exports = {
         if (!cls.ok) return { pass: false, note: cls.note };
         const res = await fetchPage(cls.url, false);
         if (res.challenge) {
+          rememberIndex(ctx);
           return {
             pass: true,
             showNote: true,
@@ -265,6 +326,7 @@ module.exports = {
           };
         }
         if (!res.ok) return { pass: false, note: res.note };
+        rememberIndex(ctx);
         return { pass: true, note: `上週那一頁抓得到（HTTP ${res.status}）` };
       },
     },
@@ -297,6 +359,15 @@ module.exports = {
           if (!/<h1|<button|<script|<input/i.test(html)) {
             problems.push('index.html 裡沒有 <h1>／<button>／<script>／<input>（做一個看得出來是你的東西）');
           }
+          // v3 7.1：光有一顆按鈕不算——按下去要真的做事。空的 <script></script> 也擋掉。
+          const scriptText = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)]
+            .map((m) => m[1])
+            .join('')
+            .replace(/\s+/g, '');
+          const hasLogic = /onclick=|addEventListener\(|function |=>/.test(html);
+          if (!hasLogic || scriptText.length < 20) {
+            problems.push('按鈕要真的做事：script 裡要有程式（onclick／addEventListener）');
+          }
         }
 
         const loaded = loadEp04Section(ctx);
@@ -308,9 +379,21 @@ module.exports = {
             problems.push(`notes.md 少了『${H_WHAT}』那一行標題`);
           } else {
             const what = mergeContent(sub.bodyLines);
-            if (what.length < 6) {
+            const whatBad = lengthCheck(what, 6);
+            if (whatBad === 'gibberish') {
+              problems.push(`notes.md「這次做的東西」${GIBBERISH_NOTE}`);
+            } else if (whatBad) {
               problems.push('notes.md「這次做的東西」還沒寫到 6 個字');
             }
+          }
+        }
+
+        // v2 6.3：關 1 上線的那一份 index.html 如果原封不動，就不算「這次做的東西」。
+        // 沒有記憶（還沒過關 1）就不加這條，免得誤傷。
+        if (ctx && typeof ctx.recall === 'function') {
+          const was = ctx.recall('ep04_1_index_sha');
+          if (was && was === indexSha(ctx)) {
+            problems.push('index.html 還是關 1 上線的那一頁。這週要做新作品：標題換掉、加一顆按鈕，再 push');
           }
         }
 
@@ -352,7 +435,7 @@ module.exports = {
           return {
             pass: true,
             showNote: true,
-            note: '網址活著（Cloudflare 擋機器人，標題沒比對；隔壁手機打開＋老師端儀表板為準）',
+            note: '未比對標題：網址活著（Cloudflare 擋機器人；隔壁手機打開＋老師端儀表板為準）',
           };
         }
         if (!res.ok) return { pass: false, note: res.note };
@@ -375,7 +458,7 @@ module.exports = {
       id: 'ep04_4',
       name: '關 4 秘密藏不住',
       short: '密語',
-      howTo: 'notes.md EP04 三個問題都用自己的話寫（每題至少 10 個字），第 3 題要把解鎖拿到的通關密語寫進去',
+      howTo: 'notes.md EP04 三問：第 1 題寫做了什麼＋驗收三件事，第 2 題貼那條帶 key 的網址（key 改成 xxxx），第 3 題寫為什麼藏不住＋通關密語',
       test(ctx) {
         const loaded = loadEp04Section(ctx);
         if (loaded.err) return { pass: false, note: loaded.err };
@@ -401,20 +484,35 @@ module.exports = {
         const c3 = mergeContent(q3.bodyLines);
 
         const problems = [];
-        if (c1.length < 10) problems.push('第 1 題還沒寫到 10 個字');
-        if (c2.length < 10) problems.push('第 2 題還沒寫到 10 個字');
-        if (c3.length < 10) problems.push('第 3 題還沒寫到 10 個字');
-        if (problems.length > 0) {
-          return { pass: false, note: `還沒寫完：${problems.join('、')}` };
+
+        // Q1：做了什麼＋驗收三件事
+        const q1bad = lengthCheck(c1, 10);
+        if (q1bad === 'gibberish') problems.push(`第 1 題${GIBBERISH_NOTE}`);
+        else if (q1bad) problems.push('第 1 題還沒寫到 10 個字');
+
+        // Q2：Network 分頁那條帶 key 的網址，key 要遮起來
+        if (!c2.includes(NETWORK_URL_MARK)) {
+          problems.push(`第 2 題要貼出那條網址（裡面看得到 ${NETWORK_URL_MARK}）`);
+        } else if (UNMASKED_KEY_RE.test(c2)) {
+          problems.push('第 2 題把整支 key 原樣貼上來了——把 key 那一段改成 xxxx 再 push（連假的也不要留）');
+        } else if (!MASK_RE.test(c2)) {
+          problems.push('第 2 題要把 key 那一段改成 xxxx（至少三個 x）');
         }
 
-        if (!hasPassphrase(c3)) {
-          return {
-            pass: false,
-            note: '第 3 題還沒有通關密語：去任務卡的解鎖框，把假網站原始碼裡的 key 貼進去，拿到密語再寫進來',
-          };
+        // Q3：為什麼藏不住＋通關密語
+        const q3bad = lengthCheck(c3, 10);
+        if (q3bad === 'gibberish') {
+          problems.push(`第 3 題${GIBBERISH_NOTE}`);
+        } else if (q3bad) {
+          problems.push('第 3 題還沒寫到 10 個字');
+        } else if (!hasPassphrase(c3)) {
+          problems.push('第 3 題還沒有通關密語：去任務卡的解鎖框，把假網站原始碼裡的 key 貼進去，拿到密語再寫進來');
         }
-        return { pass: true, note: '三題都寫了，密語也對' };
+
+        if (problems.length > 0) {
+          return { pass: false, note: problems.join('；') };
+        }
+        return { pass: true, note: '三題都寫了，網址的 key 有遮，密語也對' };
       },
     },
   ],

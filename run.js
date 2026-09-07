@@ -108,12 +108,37 @@ function emit(key, value) {
   emitted[k] = v.length > 300 ? v.slice(0, 300) : v;
 }
 
+// 持久記憶（規格 6.2）：跟 ever 一樣存在 Issue 尾註裡，跨 push 活著。
+// 用途是「這件事之前發生過」——例如關 1 上線時 index.html 長什麼樣，關 2 才判得出有沒有換新作品。
+// 只寫一次（第一次寫入後就不再覆蓋），值截 200 字。
+const mem = {};
+// recall 讀的是「這次跑之前就已經存在的記憶」的快照，不是這次剛寫進去的。
+// 不這樣分開的話，同一次 push 裡先跑的 check 寫入、後跑的 check 立刻讀到，
+// 「一次 push 就把整週做完」的學生會被自己剛寫的記憶判死（ep04_2 會誤判成沒做新作品）。
+let memAtStart = {};
+function snapshotMem() {
+  memAtStart = Object.assign({}, mem);
+}
+function remember(key, value) {
+  const k = String(key == null ? '' : key);
+  if (!k) return;
+  if (Object.prototype.hasOwnProperty.call(mem, k)) return; // 只在尚未存在時寫入
+  const v = String(value == null ? '' : value);
+  mem[k] = v.length > 200 ? v.slice(0, 200) : v;
+}
+function recall(key) {
+  const k = String(key == null ? '' : key);
+  return Object.prototype.hasOwnProperty.call(memAtStart, k) ? memAtStart[k] : null;
+}
+
 const ctx = {
   readFile,
   exists: existsPath,
   commits: getCommits(),
   trackedFiles: getTrackedFiles(),
   emit,
+  remember,
+  recall,
 };
 
 // ---------- 載入 ep*.js 模組（依檔名排序，從 __dirname） ----------
@@ -156,7 +181,10 @@ const EMAIL_RE = /^\d+\+[A-Za-z0-9-]+@users\.noreply\.github\.com$/;
 const MSG_BLACKLIST = [
   'update', 'updated', '修改', '作業', '交作業', '上傳', '更新',
   'aaa', 'asd', 'qwe', 'test', 'fix', 'commit', 'wip', 'done', 'ok', '123', '完成', '交',
+  'test1', '測試',
 ];
+// 這幾句就算包在更長的訊息裡也一樣沒說做了什麼，改用子字串比對。
+const MSG_BLACKLIST_SUBSTR = ['改了一些東西', '修改一些東西', '改東西', '一些東西'];
 // 9.1 最終清單（簡體字，去重後）：判定用，不分 notes.md／index.html。
 const SIMPLIFIED_CHARS = [
   '这', '说', '们', '网', '页', '电', '脑', '编', '码', '浏', '览', '时', '间', '进', '开',
@@ -173,6 +201,8 @@ const SECRET_PATTERNS = [
   { name: 'GitHub token', re: /\bgh[pousr]_[A-Za-z0-9]{30,}/, group: 0 },
   { name: 'Slack', re: /\bxox[abpr]-[A-Za-z0-9-]{10,}/, group: 0 },
   { name: '私鑰', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, group: 0 },
+  { name: 'Cloudflare claim 權杖', re: /claimToken=([A-Za-z0-9_.-]{6,})/, group: 1 },
+  { name: 'Cloudflare claim 權杖', re: /dash\.cloudflare\.com\/claim-preview/, group: 0 },
   {
     name: '一般指派',
     re: /\b(?:api[_-]?key|apikey|secret|token|password)\s*[:=]\s*["']([^"'\s]{12,})["']/i,
@@ -267,6 +297,7 @@ const WEEKLY = {
           const s = (x.subject || '').trim();
           if (s.length < 4) return true;
           if (MSG_BLACKLIST.includes(s.toLowerCase())) return true;
+          if (MSG_BLACKLIST_SUBSTR.some((b) => s.includes(b))) return true;
           return false;
         });
         if (bad.length === 0) {
@@ -401,6 +432,14 @@ function sanitizeEver(raw) {
   return out;
 }
 
+// 把既有尾註（或環境變數）裡的 mem 灌回來；只收字串值。
+function loadMem(raw) {
+  if (!raw || typeof raw !== 'object') return;
+  for (const k of Object.keys(raw)) {
+    if (typeof raw[k] === 'string' && raw[k].length > 0) mem[k] = raw[k];
+  }
+}
+
 function parseTailJson(body) {
   if (!body) return null;
   const m = String(body).match(/<!--\s*checks:(\{[\s\S]*?\})\s*-->/);
@@ -416,18 +455,21 @@ function parseTailJson(body) {
 async function runOneCheck(check, c, ever, nowIso) {
   const r = await safeTest(check, c);
   if (r.pass === null) return r;
+  // nowPass＝本次實際判定（不含 sticky 救援），會另外記進尾註的 results_now：
+  // 老師要看得出「這格是真的過，還是靠曾經過撐著」。
   if (r.pass) {
     if (check.sticky) ever[check.id] = nowIso;
-    return r;
+    return Object.assign({}, r, { nowPass: true });
   }
   if (check.sticky && ever[check.id]) {
     return {
       pass: true,
+      nowPass: false,
       rescued: true,
       note: `曾於 ${taipeiShort(ever[check.id])} 通過（本次：${truncateNote(r.note || '抓不到', 60)}）`,
     };
   }
-  return r;
+  return Object.assign({}, r, { nowPass: false });
 }
 
 // ---------- 組 Markdown ----------
@@ -440,6 +482,7 @@ function truncateNote(s, n) {
 async function buildMarkdown(epModules, c, ever) {
   const lines = [];
   const results = {};
+  const resultsNow = {};
   const notes = {};
   const now = new Date();
   const nowIso = now.toISOString();
@@ -462,6 +505,7 @@ async function buildMarkdown(epModules, c, ever) {
       } else {
         status = r.pass ? '✅' : '❌';
         results[check.id] = r.pass;
+        resultsNow[check.id] = r.nowPass === true;
         if (r.pass) {
           // ✅ 預設印 howTo（EP03 規格 9.2）；sticky 救回來的、或 check 自己要求的（showNote）才改印 note，
           // 例如「網址活著但 Cloudflare 擋機器人」這種學生需要知道的但書。
@@ -484,6 +528,7 @@ async function buildMarkdown(epModules, c, ever) {
     const r = await runOneCheck(check, c, ever, nowIso);
     const status = r.pass ? '✅' : '❌';
     results[check.id] = !!r.pass;
+    resultsNow[check.id] = r.nowPass === true;
     if (!r.pass) {
       anyFail = true;
       if (r.note) notes[check.id] = truncateNote(r.note, 60);
@@ -508,9 +553,11 @@ async function buildMarkdown(epModules, c, ever) {
     ts: nowIso,
     sha: fullSha,
     results,
+    results_now: resultsNow,
     notes,
     ever,
     data: emitted,
+    mem,
   };
   lines.push(`<!-- checks:${JSON.stringify(tail)} -->`);
 
@@ -585,14 +632,26 @@ async function main() {
     if (issue) {
       const tail = parseTailJson(readIssueBody(issue.number));
       ever = sanitizeEver(tail && tail.ever);
+      loadMem(tail && tail.mem);
     }
-  } else if (process.env.CHECKS_EVER_JSON) {
-    try {
-      ever = sanitizeEver(JSON.parse(process.env.CHECKS_EVER_JSON));
-    } catch (e) {
-      ever = {};
+  } else {
+    if (process.env.CHECKS_EVER_JSON) {
+      try {
+        ever = sanitizeEver(JSON.parse(process.env.CHECKS_EVER_JSON));
+      } catch (e) {
+        ever = {};
+      }
+    }
+    if (process.env.CHECKS_MEM_JSON) {
+      try {
+        loadMem(JSON.parse(process.env.CHECKS_MEM_JSON));
+      } catch (e) {
+        // 壞掉的 JSON 當作沒有記憶
+      }
     }
   }
+
+  snapshotMem(); // 記憶讀完了，凍結一份給 ctx.recall 用（見上面的說明）
 
   const { markdown, tail } = await buildMarkdown(epModules, ctx, ever);
 
