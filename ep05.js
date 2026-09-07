@@ -398,9 +398,12 @@ module.exports = {
 
         // contentLines 已經把提示行濾掉了——`- coolsea：（下週看得出有沒有做的一件事）`
         // 原封不動就不算一行（v2 修的洞），兩人真的各寫一句才數得到兩行。
+        // v3.1（2026-09-07，task-008 第二輪授權的單點修正，與專題週共用契約 v1.1 第二節同步）：
+        // 字數要**先去掉行首的 `- ` 與 `帳號：` 標籤**再算。不去掉的話，學生把提示語刪掉、
+        // 只留 `- coolsea：` 一個字都不寫，也有 11 個字，這一關會白亮。
         const bullets = contentLines(next.bodyLines)
           .filter((l) => /^-\s/.test(l))
-          .map((l) => l.replace(/^-\s+/, '').trim())
+          .map((l) => l.replace(/^-\s+/, '').replace(/^[A-Za-z0-9-]+[：:]\s*/, '').trim())
           .filter((l) => lengthCheck(l, NEXT_LINE_MIN) === null);
         if (bullets.length < NEXT_LINE_COUNT) {
           problems.push(`「下一步」要有兩行「- 」開頭、各至少 ${NEXT_LINE_MIN} 個字（A 一句、B 一句，下週看得出有沒有做）`);

@@ -6,13 +6,15 @@
 // ★ 這一支是 EP06–EP12 七週的樣板。要做下一週時整檔複製，**只改三處**：
 //     ★1 module.exports.id      'ep06' → 'ep07'
 //     ★2 module.exports.title   'EP06 專題時間 01' → 'EP07 專題時間 02'
-//     ★3 WEEK                   'EP06' → 'EP07'（check 的 id 前綴是從 WEEK 算出來的，不用手改）
+//     ★3 WEEK                   'EP06' → 'EP07'（check 的 id 前綴、emit key、dataColumns key
+//                               都是從 WEEK 算出來的，不用手改）
 //   其餘一個字都不要動。刻意不做參數化工廠：七個獨立檔案比一個會被七席同時改的工廠安全。
 //
 // 判定對象是 proj-<隊名> repo 根目錄的 專題日誌.md（七週同一份、每週一段），
 // 段落解析與「該週提交」的判定都在共用層（ctx.weekStarted／weekSection／weekAuthors），本檔不自己重寫。
 
 const WEEK = 'EP06';   // ★3
+const ID = WEEK.toLowerCase();   // 'ep06'：check id 與 emit／dataColumns 的 key 前綴
 
 const LOG_FILE = '專題日誌.md';
 
@@ -24,6 +26,8 @@ const H_NEXT = '下一堂各自要做什麼';
 const DID_MIN = 15;
 const STUCK_MIN = 10;
 const NEXT_LINE_MIN = 8;
+// `mrcoolsea：` 這種帳號標籤不算內容（只吃英數與連字號的帳號，中文暱稱不在此列）
+const NAME_LABEL_RE = /^[A-Za-z0-9-]+[：:]\s*/;
 const NEXT_LINE_COUNT = 2;
 const AUTHOR_MIN = 2;
 
@@ -74,30 +78,17 @@ function emit(ctx, key, value) {
   if (ctx && typeof ctx.emit === 'function') ctx.emit(key, String(value == null ? '' : value));
 }
 
-// 關 3 的分母：該週起點（含）之後、扣掉老師、去重的作者。演算法在共用層（契約第三節）。
-// 這裡只多做一件事：把每個人在該週範圍內的 commit 筆數數出來，emit 成 `2(3/1)` 給老師看——
-// 「B 只補了一個句號」這種假分工掃一眼就看得出來，不加判定條件。
-function weekAuthorStats(ctx) {
+// 關 3 的分母：該週起點（含）之後、扣掉老師、去重的作者，連同 `2(3/1)` 這個給老師看的摘要，
+// 全部由共用層算好（契約第三節演算法、第四節 v1.1 回傳）。各週模組不自己數。
+function weekAuthors(ctx) {
   const wa =
     typeof ctx.weekAuthors === 'function'
       ? ctx.weekAuthors(WEEK)
-      : { started: false, startSha: null, authors: [] };
-  const authors = wa && Array.isArray(wa.authors) ? wa.authors : [];
-  const set = new Set(authors);
-  const counts = new Map();
-  if (wa && wa.startSha) {
-    const all = (ctx && ctx.commits) || [];
-    const idx = all.findIndex((c) => String(c.sha || '').startsWith(wa.startSha));
-    const range = idx >= 0 ? all.slice(0, idx + 1) : [];
-    for (const c of range) {
-      const e = String(c.authorEmail || '').trim().toLowerCase();
-      if (!set.has(e)) continue;
-      counts.set(e, (counts.get(e) || 0) + 1);
-    }
-  }
-  const each = [...counts.values()].sort((a, b) => b - a);
-  const size = set.size;
-  return { size, summary: size === 0 ? '0' : `${size}(${each.join('/')})` };
+      : { started: false, startSha: null, authors: [], summary: '0' };
+  return {
+    size: Array.isArray(wa && wa.authors) ? wa.authors.length : 0,
+    summary: (wa && wa.summary) || '0',
+  };
 }
 
 module.exports = {
@@ -108,11 +99,17 @@ module.exports = {
   appliesTo(ctx) {
     return typeof ctx.weekStarted === 'function' && ctx.weekStarted(WEEK);
   },
-  // 老師端儀表板的 data 欄位：掃一眼就知道每一組這堂做出了什麼。
-  dataColumns: [{ key: 'did', label: '這堂做了什麼', width: 20 }],
+  // 老師端儀表板的 data 欄位（契約第二節 v1.1）：「這堂做了什麼」掃一眼知道誰停在原地，
+  // 「作者」是關 3 真正的分母——老師不用點進 repo 就看得出哪一組是一個人在代打。
+  // key 一律帶週次前綴：尾註的 data 是一張平表，七週共用 `did`／`authors` 會互相覆蓋
+  // （實測 EP06 的表印在畫面上、data.did 卻是 EP07 的文字）。
+  dataColumns: [
+    { key: `${ID}_did`, label: '這堂做了什麼', width: 20 },
+    { key: `${ID}_authors`, label: '作者', width: 12 },   // 值長得像 2(1/1)，寬度要放得下
+  ],
   checks: [
     {
-      id: `${WEEK.toLowerCase()}_1`,
+      id: `${ID}_1`,
       name: '關 1 這堂做出什麼',
       short: '進度',
       howTo: `專題日誌「## ${WEEK}」的「### ${H_DID}（看得到的）」寫這堂多出來的那個東西（≥${DID_MIN} 字，寫看得到的：多了哪個畫面、哪個按鈕會動了）`,
@@ -121,7 +118,7 @@ module.exports = {
         if (sec.err) return { pass: false, note: sec.err };
 
         // 儀表板的「這堂做了什麼」欄：段首 20 字。不管過不過都送，老師才掃得到停在原地的組。
-        emit(ctx, 'did', Array.from(sec.text).slice(0, 20).join(''));
+        emit(ctx, `${ID}_did`, Array.from(sec.text).slice(0, 20).join(''));
 
         const bad = lengthCheck(sec.text, DID_MIN);
         if (bad === 'gibberish') return { pass: false, note: `「${H_DID}」${GIBBERISH_NOTE}` };
@@ -135,7 +132,7 @@ module.exports = {
       },
     },
     {
-      id: `${WEEK.toLowerCase()}_2`,
+      id: `${ID}_2`,
       name: '關 2 卡在哪',
       short: '卡點',
       howTo: `專題日誌「## ${WEEK}」的「### ${H_STUCK}」寫這堂被什麼擋住（≥${STUCK_MIN} 字；沒卡住也要寫「沒卡住，因為…」）`,
@@ -155,13 +152,13 @@ module.exports = {
       },
     },
     {
-      id: `${WEEK.toLowerCase()}_3`,
+      id: `${ID}_3`,
       name: '關 3 兩人各自動手',
       short: '兩人',
       howTo: `專題日誌「## ${WEEK}」的「### ${H_NEXT}」兩人各一行（\`- \` 開頭、各 ≥${NEXT_LINE_MIN} 字），而且這一堂兩個人都要用自己的帳號 commit push`,
       test(ctx) {
-        const authors = weekAuthorStats(ctx);
-        emit(ctx, 'authors', authors.summary);
+        const authors = weekAuthors(ctx);
+        emit(ctx, `${ID}_authors`, authors.summary);
 
         const sec = loadSection(ctx, H_NEXT);
         if (sec.err) return { pass: false, note: sec.err };
@@ -170,9 +167,11 @@ module.exports = {
 
         // 提示行已經在共用層濾掉了——`- 帳號：（換成你的話）` 原封不動就不算一行，
         // 兩人真的各寫一句才數得到兩行。
+        // 字數要**先去掉行首的 `- ` 與 `帳號：` 標籤**再算（契約第二節 v1.1）：
+        // 不去掉的話，留著 `- mrcoolsea：` 後面一個字都不寫也有 11 字，燈會白亮。
         const bullets = sec.lines
           .filter((l) => /^-\s/.test(l))
-          .map((l) => l.replace(/^-\s+/, '').trim())
+          .map((l) => l.replace(/^-\s+/, '').replace(NAME_LABEL_RE, '').trim())
           .filter((l) => lengthCheck(l, NEXT_LINE_MIN) === null);
         if (bullets.length < NEXT_LINE_COUNT) {
           problems.push(

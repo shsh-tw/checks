@@ -102,6 +102,7 @@ function getTrackedFiles() {
 // EP06–EP12 七週共用同一份 專題日誌.md（每週一段）。這一層只做三件事，各週模組不准自己重寫：
 //   ctx.weekStarted(weekId)            該週段落有沒有被填（appliesTo 用：沒開始的週次整張表不印）
 //   ctx.weekAuthors(weekId)            該週「起點」之後有幾位非老師作者（關 3 的分母）
+//                                      → { started, startSha, authors: [], summary: '2(3/1)' }
 //   ctx.weekSection(weekId, subHead)   該週某個 ### 小節的內容（已扣提示行）
 //
 // 「該週提交」的定義（契約第三節，2026-09-07 四情境實測）：
@@ -231,21 +232,24 @@ function weekAuthors(weekId) {
 
   let out;
   if (!startSha) {
-    out = { started: false, startSha: null, authors: [] };
+    out = { started: false, startSha: null, authors: [], summary: '0' };
   } else {
     // ALL_COMMITS 是 git log（最新在前）；起點的索引往前切一刀＝起點（含）到 HEAD。
     const idx = ALL_COMMITS.findIndex((c) => c.sha === startSha);
     const range = idx >= 0 ? ALL_COMMITS.slice(0, idx + 1) : [];
     const skip = teacherEmailSet();
-    const authors = [];
-    const seen = new Set();
-    for (const c of range) {
-      const e = String(c.authorEmail || '').trim().toLowerCase();
-      if (e.length === 0 || skip.has(e) || seen.has(e)) continue;
-      seen.add(e);
-      authors.push(e);
+    // 倒著跑＝從起點往 HEAD（時間順），Map 保序，所以 authors 與 summary 都是「依首次出現順序」。
+    const counts = new Map();
+    for (let i = range.length - 1; i >= 0; i--) {
+      const e = String(range[i].authorEmail || '').trim().toLowerCase();
+      if (e.length === 0 || skip.has(e)) continue;
+      counts.set(e, (counts.get(e) || 0) + 1);
     }
-    out = { started: true, startSha: startSha.slice(0, 7), authors };
+    const authors = [...counts.keys()];
+    // summary＝給老師看的 `2(3/1)`：兩個人、一個 3 筆一個 1 筆。
+    // 「B 只補了一個句號」這種假分工掃儀表板就看得出來，不加判定條件（契約第二節、第四節 v1.1）。
+    const summary = authors.length === 0 ? '0' : `${authors.length}(${[...counts.values()].join('/')})`;
+    out = { started: true, startSha: startSha.slice(0, 7), authors, summary };
   }
   weekAuthorsCache.set(key, out);
   return out;
